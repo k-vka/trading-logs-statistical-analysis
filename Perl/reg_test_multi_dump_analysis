@@ -1,0 +1,718 @@
+#!/usr/bin/perl
+
+use 5.010;
+use strict;
+use warnings;
+use Cwd;
+use Term::UI;
+use Term::ReadLine;
+use File::Path;
+use File::Copy;
+use DateTime;
+use Time::Local;
+
+#=========================================================================# Regression Multi Dump Test Analysis 
+#=========================================================================
+
+my $fx_symbols_no = 2;
+
+my @fx_symbol     = ("USDCAD","AUDUSD","USDCHF","EURUSD","EURGBP","GBPUSD","USDJPY");
+my @fx_path       = ("/REGRESS_04_USDCAD","/REGRESS_04_AUDUSD","/REGRESS_03_USDCHF","/REGRESS_03_EU","/REGRESS_03_EURGBP","/REGRESS_03_GBPUSD","/REGRESS_03_USDJPY");
+my @fx_suffix     = ("UCAD","AUSD","UCHF","EU","EGBP","GUSD","UJPY");
+
+my $fx_output_path = "/REGRESS_FX_OUPUT_04";
+
+my $fx_dump_line;
+my @fx_signal_fields;
+
+#--- Input Catalogs ---
+my $source_analysis_path = "/REGRESS";
+my $tick_history_path       = "/5M_TICK_HISTORY";
+my $signal_shot_path        = "/SIGNAL_SHOTS";
+my $signal_history_path     = "/HST_LOG";
+
+my $s_reg_pos_path    = "$source_analysis_path$signal_shot_path/LRES";
+my $s_reg_shadow_path = "$source_analysis_path$signal_shot_path/Shadow/LRES";
+my $s_reg_filter_path = "$source_analysis_path$signal_shot_path/Filter4/LRES";
+
+#--- Input Files ---
+
+my $signal_history_file = "$source_analysis_path$signal_history_path/History_Log.csv";
+#--- Output catalogs ---
+
+my $target_data_path = "/OUTPUT";
+my $cases_data_path      = "/CASES";
+my $case_positive_data_path  = "/POS_CASES";
+my $case_filtered_data_path  = "/FLT_CASES";
+my $case_name_prefix             = "/CASE_";
+
+my $case_pos_ok_data_path           = "/positive";
+my $case_pos_err_data_path          = "/pos_err";
+my $case_flt_ok_data_path           = "/filter";
+my $case_flt_err_data_path          = "/flt_err";
+my $t_reg_pos_path        = "$source_analysis_path$target_data_path$signal_shot_path/positive/lres";
+my $t_reg_shadow_path     = "$source_analysis_path$target_data_path$signal_shot_path/shadow/lres";
+my $t_reg_filter_path     = "$source_analysis_path$target_data_path$signal_shot_path/filter4/lres";
+my $t_reg_pos_err_path    = "$source_analysis_path$target_data_path$signal_shot_path/positive/err";
+my $t_reg_shadow_err_path = "$source_analysis_path$target_data_path$signal_shot_path/shadow/err";
+my $t_reg_filter_err_path = "$source_analysis_path$target_data_path$signal_shot_path/filter4/err";
+
+my $signal_dump_path      = "$source_analysis_path$target_data_path/SIGNAL_DUMP";
+
+#--- Output Files ---
+
+my $signal_dump_file    = "$signal_dump_path/Signal_Dump.csv";
+
+#--- Service Data ---
+
+my @month_name = ('jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec');
+
+my $tick_history_time_int = 5;                  # tick history time interval (min)
+my $tick_point = 0.0001;                        # tick point
+my $strong_signal_type1_thresold = 50;          # type 1 threshold points
+my $strong_signal_type2_thresold = 5;           # type 2 threshold points
+my $strong_signal_type3_thresold = 100;         # type 3 threshold points (for filtered cases)
+my $max_close_value =  9999999;                 # max (impossible) close value
+my $min_close_value = -9999999;                 # min (impossible) close value
+
+#--- Suffixes ---
+
+my $low_res_postfix = "LRES";
+my $f_ext = ".gif";my $q_postfix = "_q";
+my $sq_postfix = "_sq";
+my $pos_postfix = "_pos";
+my $posq_postfix = "_posq";
+my $nq_postfix = "_nq";
+my $neg_postfix = "_neg";
+my $sneg_postfix = "_sneg";
+
+my $curr_path = getcwd;						# Current Directory
+my $term = Term::ReadLine->new('brand');
+my $file_mask = "";
+my $parse_fname = "";
+my $parse_fprefix = "";
+my $parse_fsuffix = "";
+my $source_catalog = "";
+my $regress_catalog = "";
+
+my $answer_reply = 'n';
+print "---\n";
+print "Regress Test Analysis Module\n";
+print "Current Directory: $curr_path\n";
+print "---\n";
+
+#--- Ask about Start of the Processing ---
+$answer_reply = $term->get_reply(
+                prompt  => 'Start Multi Dump Analysis Processing?',
+                choices => ['y','n'],
+                default => 'n');
+
+if ($answer_reply eq 'n')
+{
+   print "Process Stopped.\n";
+   exit 0;
+}
+
+#--- Start Analysis ---
+
+print "Process Started...\n";
+
+#-------------------------------------------------------------- Create Output Catalog Structure ---
+mkpath ("$curr_path$fx_output_path$target_data_path$signal_shot_path/positive/lres");
+mkpath ("$curr_path$fx_output_path$target_data_path$signal_shot_path/shadow/lres");
+mkpath ("$curr_path$fx_output_path$target_data_path$signal_shot_path/filter/lres");
+mkpath ("$curr_path$fx_output_path$target_data_path$signal_shot_path/positive/err");
+mkpath ("$curr_path$fx_output_path$target_data_path$signal_shot_path/shadow/err");
+mkpath ("$curr_path$fx_output_path$target_data_path$signal_shot_path/filter/err");
+
+mkpath ("$curr_path$fx_output_path$target_data_path$cases_data_path$case_positive_data_path");
+mkpath ("$curr_path$fx_output_path$target_data_path$cases_data_path$case_filtered_data_path");
+#===================================================== Read Dump Files ===
+my $signal_src_pos_flag    = "P";
+my $signal_src_shadow_flag = "S";
+my $signal_src_filter_flag = "F";
+
+my $signal_sell_flag = "S";
+my $signal_buy_flag  = "B";
+
+my $signal_strong_sell_flag_t1  = "S1";
+my $signal_strong_buy_flag_t1   = "B1";
+my $signal_strong_sell_flag_t2  = "S2";
+my $signal_strong_buy_flag_t2   = "B2";
+my $signal_strong_sell_flag_t3  = "S3";
+my $signal_strong_buy_flag_t3   = "B3";
+my $signal_week_flag            = "W";
+my $signal_strong_sell_flag_err = "SE";
+my $signal_strong_buy_flag_err  = "BE";
+
+my @signal_date;                # Signal DateTime
+my @signal_name;                # Shot File Name
+my @signal_order;               # Sell or Buy
+my @signal_type;                # Pos or Shadow or Filter
+my @signal_close;               # Close Value
+
+my @signal_strong_type;         # Sell or Buy or Weak
+my @signal_symbol_no;           # Symbol index
+
+print "Read Dump Files ...\n";
+my $j_symbol = 0;
+my $fx_dump_line_no = 0;
+while ($j_symbol < $fx_symbols_no) 
+{
+                print "Symbol: " . $fx_symbol[$j_symbol] . " ...\n";
+
+                fx_read_signal_dump($j_symbol);
+} 
+continue 
+{
+                $j_symbol = $j_symbol + 1;
+}
+
+#===================================================== Write Processed Signal Shots ==
+
+print "Write Processed Signal Shot Files ...\n";
+
+fx_write_processed_signal_shots();
+
+#===================================================== Collect Positive Error Cases ==
+
+print "Collect Positive Error Cases ...\n";
+
+fx_collect_positive_error_cases();
+
+#===================================================== Collect Filtered Error Cases ==
+
+print "Collect Filtered Error Cases ...\n";
+
+fx_collect_filtered_error_cases();
+#================================================ fx_read_signal_dump() ===============
+
+sub fx_read_signal_dump
+{
+my ($i_symb) = @_;        # Parameters                
+
+my $f_dump;
+
+my $f_dump_name = "$curr_path" . $fx_path[$i_symb] . "$target_data_path/SIGNAL_DUMP/Signal_Dump.csv";
+
+                open($f_dump, $f_dump_name) or warn "Can't open dump file: $f_dump_name";
+
+                $fx_dump_line = <$f_dump>;      # read dump header
+
+                while ($fx_dump_line = <$f_dump>) 
+                {
+                                chomp ($fx_dump_line);
+                                @fx_signal_fields = split (",", $fx_dump_line);
+
+                                $signal_date[$fx_dump_line_no] = timelocal(
+                                                substr($fx_signal_fields[1],6,2),
+                                                substr($fx_signal_fields[1],3,2),
+                                                substr($fx_signal_fields[1],0,2),
+                                                substr($fx_signal_fields[0],8,2),
+                                                substr($fx_signal_fields[0],5,2) - 1,
+                                                substr($fx_signal_fields[0],0,4) - 1900
+                                                );                                $signal_name[$fx_dump_line_no]        = $fx_signal_fields[2];
+                                $signal_order[$fx_dump_line_no]       = $fx_signal_fields[3];
+                                $signal_type[$fx_dump_line_no]        = $fx_signal_fields[4];
+                                $signal_close[$fx_dump_line_no]       = $fx_signal_fields[5];
+                                $signal_strong_type[$fx_dump_line_no] = $fx_signal_fields[6];
+                                $signal_symbol_no[$fx_dump_line_no] = $i_symb;
+                }
+                continue
+                {
+                                $fx_dump_line_no = $fx_dump_line_no + 1;
+                }
+
+                close($f_dump);
+                
+                print "Dump Records : $fx_dump_line_no\n";
+                
+                return;         
+}
+
+#================================================ fx_write_processed_signal_shots() =============
+
+sub fx_write_processed_signal_shots
+{
+my $i_sgn = 0;                             # first signal 
+my $src_fname;
+my $trg_fname;
+                while ($i_sgn < $fx_dump_line_no)
+                {
+#--- Set source file name ---
+
+                                $src_fname = fx_get_signal_src_fname($i_sgn);
+                                
+#--- Set target file name ---
+
+                                if (($signal_type[$i_sgn] eq $signal_src_pos_flag) || ($signal_type[$i_sgn] eq $signal_src_shadow_flag))
+                                {
+                                                if (($signal_strong_type[$i_sgn] eq $signal_strong_sell_flag_err) || ($signal_strong_type[$i_sgn] eq $signal_strong_buy_flag_err))
+                                                {
+                                                                $trg_fname = "$curr_path$fx_output_path$target_data_path$signal_shot_path$case_pos_ok_data_path/err/" .
+                                                                              $signal_name[$i_sgn] . "_" . $signal_strong_type[$i_sgn] . "_" . $fx_suffix[$signal_symbol_no[$i_sgn]] . ".gif";
+                                                }
+                                                else
+                                                {
+                                                                $trg_fname = "$curr_path$fx_output_path$target_data_path$signal_shot_path$case_pos_ok_data_path/lres/" .
+                                                                              $signal_name[$i_sgn] . "_" . $signal_strong_type[$i_sgn] . "_" . $fx_suffix[$signal_symbol_no[$i_sgn]] . ".gif";
+                                                }
+                                }
+                                
+                                if ($signal_type[$i_sgn] eq $signal_src_filter_flag)
+                                {
+                                                if (($signal_strong_type[$i_sgn] eq $signal_strong_sell_flag_t3) || 
+                                                    ($signal_strong_type[$i_sgn] eq $signal_strong_buy_flag_t3)
+#                                                      ||
+#                                                    ($signal_strong_type[$i_sgn] eq $signal_strong_sell_flag_t2) || 
+#                                                    ($signal_strong_type[$i_sgn] eq $signal_strong_buy_flag_t2)
+                                                    )
+                                                {
+                                                                $trg_fname = "$curr_path$fx_output_path$target_data_path$signal_shot_path$case_flt_ok_data_path/err/" .
+                                                                              $signal_name[$i_sgn] . "_" . $signal_strong_type[$i_sgn] . "_" . $fx_suffix[$signal_symbol_no[$i_sgn]] . ".gif";
+                                                }
+                                                else
+                                                {
+                                                                $trg_fname = "$curr_path$fx_output_path$target_data_path$signal_shot_path$case_flt_ok_data_path/lres/" .
+                                                                              $signal_name[$i_sgn] . "_" . $signal_strong_type[$i_sgn] . "_" . $fx_suffix[$signal_symbol_no[$i_sgn]] . ".gif";
+                                                }
+                                }
+                                
+#                                print "Copy Shot: $i_sgn\n - From: $src_fname\n - To: $trg_fname\n";
+                                
+                                copy($src_fname,$trg_fname) or warn "Can't copy $src_fname to $trg_fname\n";
+                                
+                }
+                continue
+                {
+                                $i_sgn = $i_sgn + 1;
+                }
+                return;         
+}
+#================================================ fx_collect_positive_error_cases() =========
+
+sub fx_collect_positive_error_cases
+{
+my $i_sgn = 0;                             # first signal 
+my $i_case_sgn = 0;
+my $case_name;
+
+                while ($i_sgn < $fx_dump_line_no)
+                {
+                                if (($signal_type[$i_sgn] eq $signal_src_pos_flag) || ($signal_type[$i_sgn] eq $signal_src_shadow_flag))
+                                {
+                                                if (($signal_strong_type[$i_sgn] eq $signal_strong_sell_flag_err) || ($signal_strong_type[$i_sgn] eq $signal_strong_buy_flag_err))
+                                                {
+                                                                $case_name = substr($signal_name[$i_sgn],0,index($signal_name[$i_sgn],"]-") + 1);
+                                                                $i_case_sgn = fx_find_first_pos_err_signal($case_name);
+                                                                if ($i_case_sgn == $i_sgn)
+                                                                {
+                                                                                fx_create_positive_error_case($case_name);
+                                                                }
+                                                }
+                                }
+                }
+                continue
+                {
+                                $i_sgn = $i_sgn + 1;
+                }
+
+                return;
+}
+
+#================================================ fx_collect_filtered_error_cases() =========
+
+sub fx_collect_filtered_error_cases
+{
+my $i_sgn = 0;                             # first signal 
+my $i_case_sgn = 0;
+my $case_name;
+
+                while ($i_sgn < $fx_dump_line_no)
+                {
+                                if ($signal_type[$i_sgn] eq $signal_src_filter_flag)
+                                {
+                                                if (($signal_strong_type[$i_sgn] eq $signal_strong_sell_flag_t3) || 
+                                                    ($signal_strong_type[$i_sgn] eq $signal_strong_buy_flag_t3)
+#                                                      ||
+#                                                    ($signal_strong_type[$i_sgn] eq $signal_strong_sell_flag_t2) || 
+#                                                    ($signal_strong_type[$i_sgn] eq $signal_strong_buy_flag_t2)
+                                                    )
+                                                {
+                                                                $case_name = substr($signal_name[$i_sgn],0,index($signal_name[$i_sgn],"]-") + 1);
+                                                                $i_case_sgn = fx_find_first_flt_err_signal($case_name);
+                                                                if ($i_case_sgn == $i_sgn)
+                                                                {
+                                                                                fx_create_filtered_error_case($case_name);
+                                                                }
+                                                }
+                                }
+                }
+                continue
+                {
+                                $i_sgn = $i_sgn + 1;
+                }
+
+                return;
+}
+
+#================================================ fx_find_first_pos_err_signal($case_name) =========
+
+sub fx_find_first_pos_err_signal
+{
+my ($case_name) = @_;        # Parameters 
+
+my $i_sgn = 0;                             # first signal 
+
+                while ($i_sgn < $fx_dump_line_no)
+                {
+                                if (($signal_type[$i_sgn] eq $signal_src_pos_flag) || ($signal_type[$i_sgn] eq $signal_src_shadow_flag))
+                                {
+                                                if (($signal_strong_type[$i_sgn] eq $signal_strong_sell_flag_err) || ($signal_strong_type[$i_sgn] eq $signal_strong_buy_flag_err))
+                                                {
+                                                                if (index($signal_name[$i_sgn],$case_name) >= 0)
+                                                                {
+                                                                                return($i_sgn);
+                                                                }
+                                                }
+                                }
+                }
+                continue
+                {
+                                $i_sgn = $i_sgn + 1;
+                }
+
+                return(-1);
+}
+
+#================================================ find_first_flt_err_signal($case_name) =========
+
+sub fx_find_first_flt_err_signal
+{
+my ($case_name) = @_;        # Parameters 
+
+my $i_sgn = 0;                             # first signal 
+
+                while ($i_sgn < $fx_dump_line_no)
+                {
+                                if ($signal_type[$i_sgn] eq $signal_src_filter_flag)
+                                {
+                                                if (($signal_strong_type[$i_sgn] eq $signal_strong_sell_flag_t3) || 
+                                                    ($signal_strong_type[$i_sgn] eq $signal_strong_buy_flag_t3)
+#                                                      ||
+#                                                    ($signal_strong_type[$i_sgn] eq $signal_strong_sell_flag_t2) || 
+#                                                    ($signal_strong_type[$i_sgn] eq $signal_strong_buy_flag_t2)
+                                                    )
+                                                {
+                                                                if (index($signal_name[$i_sgn],$case_name) >= 0)
+                                                                {
+                                                                                return($i_sgn);
+                                                                }
+                                                }
+                                }
+                }
+                continue
+                {
+                                $i_sgn = $i_sgn + 1;
+                }
+
+                return(-1);
+}
+
+#================================================ fx_create_positive_error_case($case_name) =========
+
+sub fx_create_positive_error_case
+{
+my ($case_name) = @_;        # Parameters 
+
+my $case_path = "$curr_path$fx_output_path$target_data_path$cases_data_path$case_positive_data_path";
+my $src_fname;
+my $trg_fname;
+my $trg_path;
+
+my $case_on_name;
+
+my $case_pos_type = fx_get_pos_signal_case_type($case_name);               # 1 - type 1 [ - ], 2 - type 2 [ - - ]
+#--- Collect positive cases ---
+
+my $i_sgn = 0;                             # first signal 
+
+$trg_path = "$case_path$case_name_prefix$case_name$case_pos_ok_data_path";
+mkpath ($trg_path);
+
+                while ($i_sgn < $fx_dump_line_no)
+                {
+                                if (($signal_type[$i_sgn] eq $signal_src_pos_flag) || ($signal_type[$i_sgn] eq $signal_src_shadow_flag))
+                                {
+                                                if (($signal_strong_type[$i_sgn] ne $signal_strong_sell_flag_err) && ($signal_strong_type[$i_sgn] ne $signal_strong_buy_flag_err))
+                                                {
+                                                                if (index($signal_name[$i_sgn],$case_name) >= 0)
+                                                                {
+                                                                                $src_fname = fx_get_signal_src_fname($i_sgn);
+                                                                                $trg_fname = "$trg_path/" . 
+                                                                                  $signal_name[$i_sgn] . "_" . $signal_strong_type[$i_sgn] . "_" . $fx_suffix[$signal_symbol_no[$i_sgn]] . ".gif";
+                                                                                
+                                                                                copy($src_fname,$trg_fname) or warn "Can't copy positive case $src_fname to $trg_fname\n";
+                                                                }
+                                                }
+                                }
+                }
+                continue
+                {
+                                $i_sgn = $i_sgn + 1;
+                }
+
+#--- Collect positive cases [0-N] ---
+
+$i_sgn = 0;                             # first signal 
+             if (($case_pos_type == 1) && (index($case_name,"[0-N]") < 0))
+             {
+                $case_on_name = substr($case_name,0,index($case_name,"["));
+                $case_on_name = $case_on_name . "[0-N]";
+                    
+                while ($i_sgn < $fx_dump_line_no)
+                {
+                                if (($signal_type[$i_sgn] eq $signal_src_pos_flag) || ($signal_type[$i_sgn] eq $signal_src_shadow_flag))
+                                {
+                                                if (($signal_strong_type[$i_sgn] ne $signal_strong_sell_flag_err) && ($signal_strong_type[$i_sgn] ne $signal_strong_buy_flag_err))
+                                                {
+                                                                if (index($signal_name[$i_sgn],$case_on_name) >= 0)
+                                                                {
+                                                                                $src_fname = fx_get_signal_src_fname($i_sgn);
+                                                                                $trg_fname = "$trg_path/" . 
+                                                                                  $signal_name[$i_sgn] . "_" . $signal_strong_type[$i_sgn] . "_" . $fx_suffix[$signal_symbol_no[$i_sgn]] . ".gif";
+                                                                                
+                                                                                copy($src_fname,$trg_fname) or warn "Can't copy positive [0-N] case $src_fname to $trg_fname\n";
+                                                                }
+                                                }
+                                }
+                }
+                continue
+                {
+                                $i_sgn = $i_sgn + 1;
+                }
+             }
+
+#--- Collect error cases ---
+
+$i_sgn = 0;                             # first signal 
+
+$trg_path = "$case_path$case_name_prefix$case_name$case_pos_err_data_path";
+mkpath ($trg_path);
+
+                while ($i_sgn < $fx_dump_line_no)
+                {
+                                if (($signal_type[$i_sgn] eq $signal_src_pos_flag) || ($signal_type[$i_sgn] eq $signal_src_shadow_flag))
+                                {
+                                                if (($signal_strong_type[$i_sgn] eq $signal_strong_sell_flag_err) || ($signal_strong_type[$i_sgn] eq $signal_strong_buy_flag_err))
+                                                {
+                                                                if (index($signal_name[$i_sgn],$case_name) >= 0)
+                                                                {
+                                                                                $src_fname = fx_get_signal_src_fname($i_sgn);
+                                                                                $trg_fname = "$trg_path/" . 
+                                                                                  $signal_name[$i_sgn] . "_" . $signal_strong_type[$i_sgn] . "_" . $fx_suffix[$signal_symbol_no[$i_sgn]] . ".gif";
+                                                                                
+                                                                                copy($src_fname,$trg_fname) or warn "Can't copy positive error case $src_fname to $trg_fname\n";
+                                                                }
+                                                }
+                                }
+                }
+                continue
+                {
+                                $i_sgn = $i_sgn + 1;
+                }
+
+#--- Collect error cases [0-N] ---
+
+$i_sgn = 0;                             # first signal 
+
+             if (($case_pos_type == 1) && (index($case_name,"[0-N]") < 0))
+             {
+                $case_on_name = substr($case_name,0,index($case_name,"["));
+                $case_on_name = $case_on_name . "[0-N]";
+                    
+                while ($i_sgn < $fx_dump_line_no)
+                {
+                                if (($signal_type[$i_sgn] eq $signal_src_pos_flag) || ($signal_type[$i_sgn] eq $signal_src_shadow_flag))
+                                {
+                                                if (($signal_strong_type[$i_sgn] eq $signal_strong_sell_flag_err) || ($signal_strong_type[$i_sgn] eq $signal_strong_buy_flag_err))
+                                                {
+                                                                if (index($signal_name[$i_sgn],$case_on_name) >= 0)
+                                                                {
+                                                                                $src_fname = fx_get_signal_src_fname($i_sgn);
+                                                                                $trg_fname = "$trg_path/" . 
+                                                                                  $signal_name[$i_sgn] . "_" . $signal_strong_type[$i_sgn] . "_" . $fx_suffix[$signal_symbol_no[$i_sgn]] . ".gif";
+                                                                                
+                                                                                copy($src_fname,$trg_fname) or warn "Can't copy positive [0-N] error case $src_fname to $trg_fname\n";
+                                                                }
+                                                }
+                                }
+                }
+                continue
+                {
+                                $i_sgn = $i_sgn + 1;
+                }
+             }
+
+                return;
+}
+
+#================================================ fx_create_filtered_error_case($case_name) =========
+
+sub fx_create_filtered_error_case
+{
+my ($case_name) = @_;        # Parameters 
+
+my $case_path = "$curr_path$fx_output_path$target_data_path$cases_data_path$case_filtered_data_path";
+my $src_fname;
+my $trg_fname;
+my $trg_path;
+
+#--- Collect filtered cases ---
+
+my $i_sgn = 0;                             # first signal 
+
+$trg_path = "$case_path$case_name_prefix$case_name$case_flt_ok_data_path";
+mkpath ($trg_path);
+
+                while ($i_sgn < $fx_dump_line_no)
+                {
+                                if ($signal_type[$i_sgn] eq $signal_src_filter_flag)
+                                {
+                                                if (($signal_order[$i_sgn] eq $signal_sell_flag) &&
+                                                    ($signal_strong_type[$i_sgn] ne $signal_strong_sell_flag_t3)
+#                                                    ($signal_strong_type[$i_sgn] ne $signal_strong_sell_flag_t2)
+                                                    )
+                                                {
+                                                                if (index($signal_name[$i_sgn],$case_name) >= 0)
+                                                                {
+                                                                                $src_fname = fx_get_signal_src_fname($i_sgn);
+                                                                                $trg_fname = "$trg_path/" . 
+                                                                                  $signal_name[$i_sgn] . "_" . $signal_strong_type[$i_sgn] . "_" . $fx_suffix[$signal_symbol_no[$i_sgn]] . ".gif";
+                                                                                
+                                                                                copy($src_fname,$trg_fname) or warn "Can't copy filtered case $src_fname to $trg_fname\n";
+                                                                }
+                                                }
+                                                
+                                                                                                if (($signal_order[$i_sgn] eq $signal_buy_flag) &&
+                                                    ($signal_strong_type[$i_sgn] ne $signal_strong_buy_flag_t3)
+#                                                    ($signal_strong_type[$i_sgn] ne $signal_strong_buy_flag_t2)
+                                                    )
+                                                {
+                                                                if (index($signal_name[$i_sgn],$case_name) >= 0)
+                                                                {
+                                                                                $src_fname = fx_get_signal_src_fname($i_sgn);
+                                                                                $trg_fname = "$trg_path/" . 
+                                                                                  $signal_name[$i_sgn] . "_" . $signal_strong_type[$i_sgn] . "_" . $fx_suffix[$signal_symbol_no[$i_sgn]] . ".gif";
+                                                                                
+                                                                                copy($src_fname,$trg_fname) or warn "Can't copy filtered case $src_fname to $trg_fname\n";
+                                                                }
+                                                }
+                                }
+                }
+                continue
+                {
+                                $i_sgn = $i_sgn + 1;
+                }
+
+#--- Collect filtered error cases ---
+
+$i_sgn = 0;                             # first signal 
+
+$trg_path = "$case_path$case_name_prefix$case_name$case_flt_err_data_path";
+mkpath ($trg_path);
+
+                while ($i_sgn < $fx_dump_line_no)
+                {
+                                if ($signal_type[$i_sgn] eq $signal_src_filter_flag)
+                                {
+                                                if  (
+                                                       ($signal_order[$i_sgn] eq $signal_sell_flag) &&
+                                                       (($signal_strong_type[$i_sgn] eq $signal_strong_sell_flag_t3)
+#                                                        || ($signal_strong_type[$i_sgn] eq $signal_strong_sell_flag_t2)
+                                                        )
+                                                    )
+                                                {
+                                                                if (index($signal_name[$i_sgn],$case_name) >= 0)
+                                                                {
+                                                                                $src_fname = fx_get_signal_src_fname($i_sgn);
+                                                                                $trg_fname = "$trg_path/" . 
+                                                                                  $signal_name[$i_sgn] . "_" . $signal_strong_type[$i_sgn] . "_" . $fx_suffix[$signal_symbol_no[$i_sgn]] . ".gif";
+                                                                                
+                                                                                copy($src_fname,$trg_fname) or warn "Can't copy filtered error case $src_fname to $trg_fname\n";
+                                                                }
+                                                }
+                                                
+                                                if  (
+                                                       ($signal_order[$i_sgn] eq $signal_buy_flag) &&
+                                                       (($signal_strong_type[$i_sgn] eq $signal_strong_buy_flag_t3)
+#                                                        || ($signal_strong_type[$i_sgn] eq $signal_strong_buy_flag_t2)
+)
+                                                    )
+                                                {
+                                                                if (index($signal_name[$i_sgn],$case_name) >= 0)
+                                                                {
+                                                                                $src_fname = fx_get_signal_src_fname($i_sgn);
+                                                                                $trg_fname = "$trg_path/" . 
+                                                                                  $signal_name[$i_sgn] . "_" . $signal_strong_type[$i_sgn] . "_" . $fx_suffix[$signal_symbol_no[$i_sgn]] . ".gif";
+                                                                                
+                                                                                copy($src_fname,$trg_fname) or warn "Can't copy filtered error case $src_fname to $trg_fname\n";
+                                                                }
+                                                }
+                                }
+                }
+                continue
+                {
+                                $i_sgn = $i_sgn + 1;
+                }
+
+                return;
+}
+
+#================================================ fx_get_signal_src_fname($i_sgn) ================
+
+sub fx_get_signal_src_fname
+{
+my ($i_sgn) = @_;        # Parameters 
+
+my $src_fname;
+
+                if ($signal_type[$i_sgn] eq $signal_src_pos_flag)
+                {
+                                $src_fname = "$curr_path" . $fx_path[$signal_symbol_no[$i_sgn]] . "$signal_shot_path/LRES/" . $signal_name[$i_sgn] . "LRES.gif";
+                }
+                                
+                if ($signal_type[$i_sgn] eq $signal_src_shadow_flag)
+                {
+                                $src_fname = "$curr_path" . $fx_path[$signal_symbol_no[$i_sgn]] . "$signal_shot_path/Shadow/LRES/" . $signal_name[$i_sgn] . "LRES.gif";
+                }
+                                
+                if ($signal_type[$i_sgn] eq $signal_src_filter_flag)
+                {
+                                $src_fname = "$curr_path" . $fx_path[$signal_symbol_no[$i_sgn]] . "$signal_shot_path/Filter4/LRES/" . $signal_name[$i_sgn] . "LRES.gif";
+                }
+                return($src_fname);
+}
+
+#================================================ fx_get_pos_signal_case_type($case_name) ================
+
+sub fx_get_pos_signal_case_type
+{
+my ($case_n) = @_;        # Parameters 
+my $case_type = 1;      
+
+my $case_n_postfix = substr($case_n,index($case_n,"["),(length($case_n) - index($case_n,"[")));
+
+my $idx_val_first  = index($case_n_postfix,"-");
+my $idx_val_second = index($case_n_postfix,"-",$idx_val_first);
+
+                if($idx_val_second >= 0)
+                {
+                                $case_type = 2;
+                }
+
+
+                return($case_type);
+}
+
+

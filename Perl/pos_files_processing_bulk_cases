@@ -1,0 +1,647 @@
+#!/usr/bin/perl
+
+use 5.010;
+use strict;
+use warnings;
+use Cwd;
+use Term::UI;
+use Term::ReadLine;
+use File::Path;
+use File::Copy;
+use DateTime;
+use Time::Local;
+
+#---# POS Files Processing 
+#---
+my $source_2012_path = "/AUDUSD_2012";
+my $processed_2012_path = "/AUDUSD_2012_PROC";
+my $regress_2012_path = "/AUDUSD_2012_REGRESS";
+my $reg_proc_2012_path = "/AUDUSD_2012_REG_PROC";
+
+#--- Source catalogs ---
+my $s_pos_path = "/source$processed_2012_path/LRES";
+my $s_shadow_path = "/source$processed_2012_path/Shadow/LRES";
+my $s_filter_path = "/source$processed_2012_path/Filter4/LRES";
+
+my $s_reg_pos_path = "/source$regress_2012_path/LRES";
+my $s_reg_shadow_path = "/source$regress_2012_path/Shadow/LRES";
+my $s_reg_filter_path = "/source$regress_2012_path/Filter4/LRES";
+#--- Target catalogs ---
+
+my $t_pos_path = "target$processed_2012_path/positive/LRES";
+my $t_shadow_path = "target$processed_2012_path/shadow/LRES";
+my $t_filter_path = "target$processed_2012_path/filter4/LRES";
+
+my $t_reg_pos_path = "target$regress_2012_path/positive/LRES";
+my $t_reg_shadow_path = "target$regress_2012_path/shadow/LRES";
+my $t_reg_filter_path = "target$regress_2012_path/filter4/LRES";
+my $t_reg_pos_err_path = "target$regress_2012_path/positive/err";
+my $t_reg_shadow_err_path = "target$regress_2012_path/shadow/err";
+my $t_reg_filter_err_path = "target$regress_2012_path/filter4/err";
+
+#--- Suffixes ---
+
+my $low_res_postfix = "LRES";
+my $f_ext = ".gif";my $q_postfix = "_q";
+my $sq_postfix = "_sq";
+my $pos_postfix = "_pos";
+my $posq_postfix = "_posq";
+my $nq_postfix = "_nq";
+my $neg_postfix = "_neg";
+my $sneg_postfix = "_sneg";
+
+my $curr_path = getcwd;						# Current Directory
+my $term = Term::ReadLine->new('brand');
+my $file_mask = "";
+my $parse_fname = "";
+my $parse_fprefix = "";
+my $parse_fsuffix = "";
+my $source_catalog = "";
+my $regress_catalog = "";
+
+my $answer_reply = 'n';
+
+my $shift_seconds = 60*60;                      # 1 hour
+my @month_name = ('jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec');
+print "---\n";
+print "POS Files Processing Module\n";
+print "Current Directory: $curr_path\n";
+print "Source Positive Files Catalog: $s_pos_path\n";
+print "  Source Shadow Files Catalog: $s_shadow_path\n";
+print "Source Filtered Files Catalog: $s_pos_path\n";
+print "---\n\n";
+
+#--- Ask about Start of the Processing ---
+$answer_reply = $term->get_reply(
+                prompt  => 'Start File Processing?',
+                choices => ['y','n'],
+                default => 'n');
+
+if ($answer_reply eq 'n')
+{
+   print "Process Stopped.\n";
+   exit 0;
+}
+
+#--- Start the Processing ---
+
+print "Process Started.\n";
+
+#-------------------------------------------------------------- Create Target Catalog Structure ---
+
+mkpath ($t_pos_path);
+mkpath ($t_shadow_path);
+mkpath ($t_filter_path);
+mkpath ($t_reg_pos_path);
+mkpath ($t_reg_shadow_path);
+mkpath ($t_reg_filter_path);
+mkpath ($t_reg_pos_err_path);
+mkpath ($t_reg_shadow_err_path);
+mkpath ($t_reg_filter_err_path);
+
+#===================================================== Process Positive Source Catalog (../LRES) ===
+
+print "Process Positive Source Catalog (../LRES).\n";
+#===================================================== "*LRES.gif" ===
+$source_catalog = "$curr_path$s_pos_path";
+print "Source Catalog: $source_catalog\n";
+
+opendir(my $source_dir, $source_catalog) or die $!;
+my @source_files = grep { /LRES.gif$/ } readdir($source_dir);
+closedir($source_dir);
+print "Total files to process (LRES.gif): " . @source_files . "\n";
+
+#---------------------------------------------------- (../LRES) Check regress LRES ---
+
+$regress_catalog = "$curr_path$s_reg_pos_path";
+print "Regress LRES Catalog: $regress_catalog\n";
+
+opendir(my $target_dir, $regress_catalog) or die $!;
+my @target_files = grep { /LRES.gif$/ } readdir($target_dir);
+closedir($target_dir);
+print "Total files to process (Regress LRES.gif): " . @target_files . "\n";
+foreach my $file_item (@source_files)
+{
+#--- Parse source file name ---
+
+                $parse_fname = $file_item;
+                
+                ($parse_fprefix, $parse_fsuffix) = parse_file_name($parse_fname);
+                print "$file_item ($parse_fprefix) ($parse_fsuffix)\n";
+                
+                my $i_count = 0;
+                foreach my $r_file_item (@target_files)
+                {
+#                                if ((index($r_file_item,$parse_fprefix) >= 0) && (index($r_file_item,$parse_fsuffix) >= 0))
+#                                if ((index($r_file_item,$parse_fprefix) >= 0) && (compare_file_names_time_shift($file_item,$r_file_item) <= $shift_seconds))
+                                if ((compare_file_names_case($file_item,$r_file_item) > 0) && (compare_file_names_time_shift($file_item,$r_file_item) <= $shift_seconds))
+                                {
+                                                $i_count = $i_count + 1;
+                                                print "Match $i_count, File:$r_file_item\n";
+                                                
+                                                my $r_file_modified = $r_file_item;
+                                                substr($r_file_modified,index($r_file_modified,".gif"),4,"_BLK.gif");
+                                                
+                                                move("$regress_catalog/$r_file_item","$curr_path/$t_reg_pos_path/$r_file_modified");
+                                                $r_file_item = "";
+                                }
+                }
+                
+                if ($i_count > 0)
+                {
+#                                move("$source_catalog/$file_item","$curr_path/$t_pos_path/$file_item");
+                }
+
+}
+
+#-------------------------------------------------- (../LRES) Check regress Shadow ---
+
+$regress_catalog = "$curr_path$s_reg_shadow_path";
+
+print "Regress Shadow Catalog: $regress_catalog\n";
+
+opendir(my $target_dir, $regress_catalog) or die $!;
+my @target_files = grep { /LRES.gif$/ } readdir($target_dir);
+closedir($target_dir);
+print "Total files to process (Regress Shadow LRES.gif): " . @target_files . "\n";
+
+foreach my $file_item (@source_files)
+{
+#--- Parse source file name ---
+
+                $parse_fname = $file_item;
+                
+                ($parse_fprefix, $parse_fsuffix) = parse_file_name($parse_fname);
+                print "$file_item ($parse_fprefix) ($parse_fsuffix)\n";
+                
+                my $i_count = 0;
+                foreach my $r_file_item (@target_files)
+                {
+#                                if ((index($r_file_item,$parse_fprefix) >= 0) && (index($r_file_item,$parse_fsuffix) >= 0))
+#                                if ((index($r_file_item,$parse_fprefix) >= 0) && (compare_file_names_time_shift($file_item,$r_file_item) <= $shift_seconds))
+                                if ((compare_file_names_case($file_item,$r_file_item) > 0) && (compare_file_names_time_shift($file_item,$r_file_item) <= $shift_seconds))
+                                {
+                                                $i_count = $i_count + 1;
+                                                print "Match $i_count, File:$r_file_item\n";
+                                                
+                                                my $r_file_modified = $r_file_item;
+                                                substr($r_file_modified,index($r_file_modified,".gif"),4,"_BLK.gif");
+                                                
+                                                move("$regress_catalog/$r_file_item","$curr_path/$t_reg_pos_path/$r_file_modified");
+                                                $r_file_item = "";
+                                }
+                }
+                
+                if ($i_count > 0)
+                {
+#                                move("$source_catalog/$file_item","$curr_path/$t_pos_path/$file_item");
+                }
+
+}
+
+#------------------------------------------------------ (../LRES) Check regress Filter4 ---
+
+$regress_catalog = "$curr_path$s_reg_filter_path";
+
+print "Regress Filter Catalog: $regress_catalog\n";
+
+opendir(my $target_dir, $regress_catalog) or die $!;
+my @target_files = grep { /LRES.gif$/ } readdir($target_dir);
+closedir($target_dir);
+print "Total files to process (Regress LRES.gif): " . @target_files . "\n";
+
+foreach my $file_item (@source_files)
+{
+#--- Parse source file name ---
+
+                $parse_fname = $file_item;
+                
+                ($parse_fprefix, $parse_fsuffix) = parse_file_name($parse_fname);
+                print "$file_item ($parse_fprefix) ($parse_fsuffix)\n";
+                
+                my $i_count = 0;
+                foreach my $r_file_item (@target_files)
+                {
+#                                if ((index($r_file_item,$parse_fprefix) >= 0) && (index($r_file_item,$parse_fsuffix) >= 0))
+#                                if ((index($r_file_item,$parse_fprefix) >= 0) && (compare_file_names_time_shift($file_item,$r_file_item) <= $shift_seconds))
+                                if ((compare_file_names_case($file_item,$r_file_item) > 0) && (compare_file_names_time_shift($file_item,$r_file_item) <= $shift_seconds))
+                                {
+                                                $i_count = $i_count + 1;
+                                                print "Match $i_count, File:$r_file_item\n";
+                                                
+                                                my $r_file_modified = $r_file_item;
+                                                substr($r_file_modified,index($r_file_modified,".gif"),4,"_BLK.gif");
+                                                
+                                                move("$regress_catalog/$r_file_item","$curr_path/$t_reg_filter_err_path/$r_file_modified");
+                                                $r_file_item = "";
+                                }
+                }
+                
+                if ($i_count > 0)
+                {
+#                                move("$source_catalog/$file_item","$curr_path/$t_pos_path/$file_item");
+                }
+
+}
+
+#========================================================== (../LRES) "*LRES_q.gif" ===
+
+$source_catalog = "$curr_path$s_pos_path";
+print "Source Catalog: $source_catalog\n";
+
+opendir(my $source_dir, $source_catalog) or die $!;
+my @source_files = grep { /LRES_q.gif$/ } readdir($source_dir);
+closedir($source_dir);
+print "Total files to process (LRES_q.gif): " . @source_files . "\n";
+
+#---------------------------------------------------- (../LRES) "*LRES_q.gif" Check regress LRES ---
+
+$regress_catalog = "$curr_path$s_reg_pos_path";
+print "Regress LRES Catalog: $regress_catalog\n";
+
+opendir(my $target_dir, $regress_catalog) or die $!;
+my @target_files = grep { /LRES.gif$/ } readdir($target_dir);
+closedir($target_dir);
+print "Total files to process (Regress LRES.gif): " . @target_files . "\n";
+
+foreach my $file_item (@source_files)
+{
+#--- Parse source file name ---
+
+                $parse_fname = $file_item; 
+                substr($parse_fname,index($parse_fname,"_q"),2,""); 
+                
+                ($parse_fprefix, $parse_fsuffix) = parse_file_name($parse_fname);
+                print "$file_item ($parse_fprefix) ($parse_fsuffix)\n";
+                
+                my $i_count = 0;
+                foreach my $r_file_item (@target_files)
+                {
+#                                if ((index($r_file_item,$parse_fprefix) >= 0) && (index($r_file_item,$parse_fsuffix) >= 0))
+#                                if ((index($r_file_item,$parse_fprefix) >= 0) && (compare_file_names_time_shift($file_item,$r_file_item) <= $shift_seconds))
+                                if ((compare_file_names_case($file_item,$r_file_item) > 0) && (compare_file_names_time_shift($file_item,$r_file_item) <= $shift_seconds))
+                                {
+                                                $i_count = $i_count + 1;
+                                                print "Match $i_count, File:$r_file_item\n";
+                                                
+                                                my $r_file_modified = $r_file_item;
+                                                substr($r_file_modified,index($r_file_modified,".gif"),4,"_BLK_q.gif");
+
+                                                move("$regress_catalog/$r_file_item","$curr_path/$t_reg_pos_path/$r_file_modified");
+                                                $r_file_item = "";
+                                }
+                }
+                
+                if ($i_count > 0)
+                {
+#                                move("$source_catalog/$file_item","$curr_path/$t_pos_path/$file_item");
+                }
+
+}
+
+#-------------------------------------------------- (../LRES) "*LRES_q.gif" Check regress Shadow ---
+
+$regress_catalog = "$curr_path$s_reg_shadow_path";
+
+print "Regress Shadow Catalog: $regress_catalog\n";
+
+opendir(my $target_dir, $regress_catalog) or die $!;
+my @target_files = grep { /LRES.gif$/ } readdir($target_dir);
+closedir($target_dir);
+print "Total files to process (Regress Shadow LRES.gif): " . @target_files . "\n";
+
+foreach my $file_item (@source_files)
+{
+#--- Parse source file name ---
+
+                $parse_fname = $file_item;
+                substr($parse_fname,index($parse_fname,"_q"),2,"");
+                
+                ($parse_fprefix, $parse_fsuffix) = parse_file_name($parse_fname);
+                print "$file_item ($parse_fprefix) ($parse_fsuffix)\n";
+                
+                my $i_count = 0;
+                foreach my $r_file_item (@target_files)
+                {
+#                                if ((index($r_file_item,$parse_fprefix) >= 0) && (index($r_file_item,$parse_fsuffix) >= 0))
+#                                if ((index($r_file_item,$parse_fprefix) >= 0) && (compare_file_names_time_shift($file_item,$r_file_item) <= $shift_seconds))
+                                if ((compare_file_names_case($file_item,$r_file_item) > 0) && (compare_file_names_time_shift($file_item,$r_file_item) <= $shift_seconds))
+                                {
+                                                $i_count = $i_count + 1;
+                                                print "Match $i_count, File:$r_file_item\n";
+                                                
+                                                my $r_file_modified = $r_file_item;
+                                                substr($r_file_modified,index($r_file_modified,".gif"),4,"_BLK_q.gif");
+                                                move("$regress_catalog/$r_file_item","$curr_path/$t_reg_pos_path/$r_file_modified");
+                                                $r_file_item = "";
+                                }
+                }
+                
+                if ($i_count > 0)
+                {
+#                                move("$source_catalog/$file_item","$curr_path/$t_pos_path/$file_item");
+                }
+
+}
+
+#------------------------------------------------------ (../Shadow/LRES) "*LRES_q.gif" Check regress Filter4 ---
+
+$regress_catalog = "$curr_path$s_reg_filter_path";
+
+print "Regress Filter Catalog: $regress_catalog\n";
+
+opendir(my $target_dir, $regress_catalog) or die $!;
+my @target_files = grep { /LRES.gif$/ } readdir($target_dir);
+closedir($target_dir);
+print "Total files to process (Filter Regress LRES.gif): " . @target_files . "\n";
+
+foreach my $file_item (@source_files)
+{
+#--- Parse source file name ---
+
+                $parse_fname = $file_item;
+                substr($parse_fname,index($parse_fname,"_q"),2,"");
+                
+                ($parse_fprefix, $parse_fsuffix) = parse_file_name($parse_fname);
+                print "$file_item ($parse_fprefix) ($parse_fsuffix)\n";
+                
+                my $i_count = 0;
+                foreach my $r_file_item (@target_files)
+                {
+#                                if ((index($r_file_item,$parse_fprefix) >= 0) && (index($r_file_item,$parse_fsuffix) >= 0))
+#                                if ((index($r_file_item,$parse_fprefix) >= 0) && (compare_file_names_time_shift($file_item,$r_file_item) <= $shift_seconds))
+                                if ((compare_file_names_case($file_item,$r_file_item) > 0) && (compare_file_names_time_shift($file_item,$r_file_item) <= $shift_seconds))
+                                {
+                                                $i_count = $i_count + 1;
+                                                print "Match $i_count, File:$r_file_item\n";
+                                                
+                                                my $r_file_modified = $r_file_item;
+                                                substr($r_file_modified,index($r_file_modified,".gif"),4,"_BLK_q.gif");
+                                                
+                                                move("$regress_catalog/$r_file_item","$curr_path/$t_reg_filter_path/$r_file_modified");
+                                                $r_file_item = "";
+                                }
+                }
+                
+                if ($i_count > 0)
+                {
+#                                move("$source_catalog/$file_item","$curr_path/$t_pos_path/$file_item");
+                }
+
+}
+#========================================================== (../LRES) "*LRES_pos.gif" ===
+
+$source_catalog = "$curr_path$s_pos_path";
+print "Source Catalog: $source_catalog\n";
+
+opendir(my $source_dir, $source_catalog) or die $!;
+my @source_files = grep { /LRES_pos.gif$/ } readdir($source_dir);
+closedir($source_dir);
+print "Total files to process (LRES_pos.gif): " . @source_files . "\n";
+
+#---------------------------------------------------- (../LRES) "*LRES_pos.gif" Check regress LRES ---
+
+$regress_catalog = "$curr_path$s_reg_pos_path";
+print "Regress LRES Catalog: $regress_catalog\n";
+
+opendir(my $target_dir, $regress_catalog) or die $!;
+my @target_files = grep { /LRES.gif$/ } readdir($target_dir);
+closedir($target_dir);
+print "Total files to process (Regress LRES.gif): " . @target_files . "\n";
+
+foreach my $file_item (@source_files)
+{
+#--- Parse source file name ---
+
+                $parse_fname = $file_item; 
+                substr($parse_fname,index($parse_fname,"_pos"),4,""); 
+                
+                ($parse_fprefix, $parse_fsuffix) = parse_file_name($parse_fname);
+                print "$file_item ($parse_fprefix) ($parse_fsuffix)\n";
+                
+                my $i_count = 0;
+                foreach my $r_file_item (@target_files)
+                {
+#                                if ((index($r_file_item,$parse_fprefix) >= 0) && (index($r_file_item,$parse_fsuffix) >= 0))
+#                                if ((index($r_file_item,$parse_fprefix) >= 0) && (compare_file_names_time_shift($file_item,$r_file_item) <= $shift_seconds))
+                                if ((compare_file_names_case($file_item,$r_file_item) > 0) && (compare_file_names_time_shift($file_item,$r_file_item) <= $shift_seconds))
+                                {
+                                                $i_count = $i_count + 1;
+                                                print "Match $i_count, File:$r_file_item\n";
+                                                
+                                                my $r_file_modified = $r_file_item;
+                                                substr($r_file_modified,index($r_file_modified,".gif"),4,"_BLK_pos.gif");
+
+                                                move("$regress_catalog/$r_file_item","$curr_path/$t_reg_pos_path/$r_file_modified");
+                                                $r_file_item = "";
+                                }
+                }
+                
+                if ($i_count > 0)
+                {
+#                                move("$source_catalog/$file_item","$curr_path/$t_pos_path/$file_item");
+                }
+
+}
+
+#-------------------------------------------------- (../LRES) "*LRES_pos.gif" Check regress Shadow ---
+
+$regress_catalog = "$curr_path$s_reg_shadow_path";
+
+print "Regress Shadow Catalog: $regress_catalog\n";
+
+opendir(my $target_dir, $regress_catalog) or die $!;
+my @target_files = grep { /LRES.gif$/ } readdir($target_dir);
+closedir($target_dir);
+print "Total files to process (Regress Shadow LRES.gif): " . @target_files . "\n";
+
+foreach my $file_item (@source_files)
+{
+#--- Parse source file name ---
+
+                $parse_fname = $file_item;
+                substr($parse_fname,index($parse_fname,"_pos"),4,"");
+                
+                ($parse_fprefix, $parse_fsuffix) = parse_file_name($parse_fname);
+                print "$file_item ($parse_fprefix) ($parse_fsuffix)\n";
+                
+                my $i_count = 0;
+                foreach my $r_file_item (@target_files)
+                {
+#                                if ((index($r_file_item,$parse_fprefix) >= 0) && (index($r_file_item,$parse_fsuffix) >= 0))
+#                                if ((index($r_file_item,$parse_fprefix) >= 0) && (compare_file_names_time_shift($file_item,$r_file_item) <= $shift_seconds))
+                                if ((compare_file_names_case($file_item,$r_file_item) > 0) && (compare_file_names_time_shift($file_item,$r_file_item) <= $shift_seconds))
+                                {
+                                                $i_count = $i_count + 1;
+                                                print "Match $i_count, File:$r_file_item\n";
+                                                
+                                                my $r_file_modified = $r_file_item;
+                                                substr($r_file_modified,index($r_file_modified,".gif"),4,"_BLK_pos.gif");
+
+                                                move("$regress_catalog/$r_file_item","$curr_path/$t_reg_pos_path/$r_file_modified");
+                                                $r_file_item = "";
+                                }
+                }
+                
+                if ($i_count > 0)
+                {
+#                                move("$source_catalog/$file_item","$curr_path/$t_pos_path/$file_item");
+                }
+
+}
+
+#------------------------------------------------------ (../LRES) "*LRES_pos.gif" Check regress Filter4 ---
+
+$regress_catalog = "$curr_path$s_reg_filter_path";
+
+print "Regress Filter Catalog: $regress_catalog\n";
+
+opendir(my $target_dir, $regress_catalog) or die $!;
+my @target_files = grep { /LRES.gif$/ } readdir($target_dir);
+closedir($target_dir);
+print "Total files to process (Filter Regress LRES.gif): " . @target_files . "\n";
+
+foreach my $file_item (@source_files)
+{
+#--- Parse source file name ---
+
+                $parse_fname = $file_item;
+                substr($parse_fname,index($parse_fname,"_pos"),4,"");
+                
+                ($parse_fprefix, $parse_fsuffix) = parse_file_name($parse_fname);
+                print "$file_item ($parse_fprefix) ($parse_fsuffix)\n";
+                
+                my $i_count = 0;
+                foreach my $r_file_item (@target_files)
+                {
+#                                if ((index($r_file_item,$parse_fprefix) >= 0) && (index($r_file_item,$parse_fsuffix) >= 0))
+#                                if ((index($r_file_item,$parse_fprefix) >= 0) && (compare_file_names_time_shift($file_item,$r_file_item) <= $shift_seconds))
+                                if ((compare_file_names_case($file_item,$r_file_item) > 0) && (compare_file_names_time_shift($file_item,$r_file_item) <= $shift_seconds))
+                                {
+                                                $i_count = $i_count + 1;
+                                                print "Match $i_count, File:$r_file_item\n";
+                                                
+                                                my $r_file_modified = $r_file_item;
+                                                substr($r_file_modified,index($r_file_modified,".gif"),4,"_BLK_pos.gif");
+                                                
+                                                move("$regress_catalog/$r_file_item","$curr_path/$t_reg_filter_err_path/$r_file_modified");
+                                                $r_file_item = "";
+                                }
+                }
+                
+                if ($i_count > 0)
+                {
+#                                move("$source_catalog/$file_item","$curr_path/$t_pos_path/$file_item");
+                }
+
+}
+#================================================ parse_file_name ====================================
+
+sub parse_file_name {
+                my $fname = shift @_;
+                my $prefix = "";
+                my $suffix = "";
+                
+                my $pos = index($fname,"-");
+                $pos = index($fname,"-",($pos+1));
+                $prefix = substr($fname,0,$pos);
+                $suffix = substr($fname,-26,22);
+                return ($prefix, $suffix);
+}
+#================================================ compare_file_names_time_shift ======================
+
+sub compare_file_names_time_shift                       # returns time shift seconds (module)
+{
+                my ($src_fname, $trg_fname) = @_;        # Parameters
+                
+                my $s_time = timelocal(get_fname_datetime($src_fname));
+                my $t_time = timelocal(get_fname_datetime($trg_fname));
+                
+                if ($s_time >= $t_time)
+                {
+                                return ($s_time - $t_time);
+                }
+                else
+                {
+                                return ($t_time - $s_time);
+                }
+
+}
+
+#================================================ compare_file_names_case ======================
+sub compare_file_names_case
+{
+                my ($src_fname, $trg_fname) = @_;        # Parameters
+                
+                                if ($trg_fname eq "")
+                {
+                                return (0);
+                }
+                
+                my $s_case = substr($src_fname,0,1);
+                my $t_case = substr($trg_fname,0,1);
+                
+               
+                if (
+                                (($s_case == 1) || ($s_case == 3) || ($s_case == 5)) &&
+                                (($t_case == 1) || ($t_case == 3) || ($t_case == 5))
+                   )
+                {
+#                                print "Cases OK: $s_case,$t_case\n";
+                                return (1);
+                }
+                
+                if (
+                                (($s_case == 2) || ($s_case == 4) || ($s_case == 6)) &&
+                                (($t_case == 2) || ($t_case == 4) || ($t_case == 6))
+                   )
+                {
+#                                print "Cases OK: $s_case,$t_case\n";
+                                return (1);
+                }
+                
+                #                print "Cases NOT OK: $s_case,$t_case\n";
+
+                return(0);
+}
+
+#================================================ get_fname_datetime =================================
+
+sub get_fname_datetime
+{
+                my $fname = shift @_;        # Parameters
+                
+                my $sec = 0;
+                my $min = 0;
+                my $hour = 0;
+                my $mday = 0;
+                my $mon = 0;
+                my $year = 0;
+                
+                my $pos = index($fname,"]-");
+                $pos = $pos + 2;
+                
+                $year = substr($fname,$pos,4);
+                
+                my $mname = substr($fname,$pos+5,3);
+                foreach my $mname_item (@month_name)
+                {
+                                if ($mname ne $mname_item)
+                                {
+                                                $mon = $mon + 1;
+                                }
+                                else
+                                {
+                                                last;
+                                }
+                }
+                
+                $mday = substr($fname,$pos+5+4,2);
+                $hour = substr($fname,$pos+5+4+3,2);
+                $min = substr($fname,$pos+5+4+3+2,2);
+                $sec = substr($fname,$pos+5+4+3+2+2,2);
+                
+#                print "DateTime parsing: $sec,$min,$hour,$mday,$mon,$year\n";
+                
+                return ($sec,$min,$hour,$mday,$mon,$year);
+}

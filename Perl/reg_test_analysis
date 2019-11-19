@@ -1,0 +1,1372 @@
+#!/usr/bin/perl
+
+use 5.010;
+use strict;
+use warnings;
+use Cwd;
+use Term::UI;
+use Term::ReadLine;
+use File::Path;
+use File::Copy;
+use DateTime;
+use Time::Local;
+
+#=========================================================================# Regression test Analysis 
+#=========================================================================
+
+my $fx_symbol = "AUDUSD";
+
+my $tick_history_time_int = 5;                  # tick history time interval (min)
+
+my $strong_signal_type1_thresold = 70;          # type 1 threshold points
+my $strong_signal_type2_thresold = 5;           # type 2 threshold points
+my $strong_signal_type3_thresold = 150;         # type 3 threshold points (for filtered cases)
+my $max_close_value =  9999999;                 # max (impossible) close value
+my $min_close_value = -9999999;                 # min (impossible) close value
+
+my $tick_point = 0.0001;                        # tick point
+
+if ($fx_symbol eq "AUDUSD")
+{
+                $strong_signal_type1_thresold = 60;
+                $strong_signal_type3_thresold = 120;
+}
+if ($fx_symbol eq "USDCAD")
+{
+                $strong_signal_type1_thresold = 70;
+                $strong_signal_type3_thresold = 150;
+}
+
+if ($fx_symbol eq "USDJPY")
+{
+                $tick_point = 100.0 * 5 / 8 * 0.0001;
+}
+
+if ($fx_symbol eq "EURGBP")
+{
+                $tick_point = 1.0 * 5 / 8 * 0.0001;
+}
+
+#--- Input Catalogs ---
+my $source_analysis_path = "/REGRESS";
+my $tick_history_path       = "/5M_TICK_HISTORY";
+my $signal_shot_path        = "/SIGNAL_SHOTS";
+my $signal_history_path     = "/HST_LOG";
+
+my $s_reg_pos_path    = "$source_analysis_path$signal_shot_path/LRES";
+my $s_reg_shadow_path = "$source_analysis_path$signal_shot_path/Shadow/LRES";
+my $s_reg_filter_path = "$source_analysis_path$signal_shot_path/Filter4/LRES";
+
+#--- Input Files ---
+
+my $tick_history_file   = "$source_analysis_path$tick_history_path/$fx_symbol" . "5.csv";
+my $signal_history_file = "$source_analysis_path$signal_history_path/History_Log.csv";
+#--- Output catalogs ---
+
+my $target_data_path = "/OUTPUT";
+my $cases_data_path      = "/CASES";
+my $case_positive_data_path  = "/POS_CASES";
+my $case_filtered_data_path  = "/FLT_CASES";
+my $case_name_prefix             = "/CASE_";
+
+my $case_pos_ok_data_path           = "/positive";
+my $case_pos_err_data_path          = "/pos_err";
+my $case_flt_ok_data_path           = "/filter";
+my $case_flt_err_data_path          = "/flt_err";
+my $t_reg_pos_path        = "$source_analysis_path$target_data_path$signal_shot_path/positive/lres";
+my $t_reg_shadow_path     = "$source_analysis_path$target_data_path$signal_shot_path/shadow/lres";
+my $t_reg_filter_path     = "$source_analysis_path$target_data_path$signal_shot_path/filter4/lres";
+my $t_reg_pos_err_path    = "$source_analysis_path$target_data_path$signal_shot_path/positive/err";
+my $t_reg_shadow_err_path = "$source_analysis_path$target_data_path$signal_shot_path/shadow/err";
+my $t_reg_filter_err_path = "$source_analysis_path$target_data_path$signal_shot_path/filter4/err";
+
+my $signal_dump_path      = "$source_analysis_path$target_data_path/SIGNAL_DUMP";
+
+#--- Output Files ---
+
+my $signal_dump_file    = "$signal_dump_path/Signal_Dump.csv";
+
+#--- Service Data ---
+
+my @month_name = ('jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec');
+
+#--- Suffixes ---
+
+my $low_res_postfix = "LRES";
+my $f_ext = ".gif";my $q_postfix = "_q";
+my $sq_postfix = "_sq";
+my $pos_postfix = "_pos";
+my $posq_postfix = "_posq";
+my $nq_postfix = "_nq";
+my $neg_postfix = "_neg";
+my $sneg_postfix = "_sneg";
+
+my $curr_path = getcwd;						# Current Directory
+my $term = Term::ReadLine->new('brand');
+my $file_mask = "";
+my $parse_fname = "";
+my $parse_fprefix = "";
+my $parse_fsuffix = "";
+my $source_catalog = "";
+my $regress_catalog = "";
+
+my $answer_reply = 'n';
+print "---\n";
+print "Regress Test Analysis Module\n";
+print "Current Directory: $curr_path\n";
+print "---\n";
+
+#--- Ask about Start of the Processing ---
+$answer_reply = $term->get_reply(
+                prompt  => 'Start Analysis Processing?',
+                choices => ['y','n'],
+                default => 'n');
+
+if ($answer_reply eq 'n')
+{
+   print "Process Stopped.\n";
+   exit 0;
+}
+
+#--- Start Analysis ---
+
+print "Process Started...\n";
+
+#-------------------------------------------------------------- Create Output Catalog Structure ---
+mkpath ("$curr_path$t_reg_pos_path");
+mkpath ("$curr_path$t_reg_shadow_path");
+mkpath ("$curr_path$t_reg_filter_path");
+mkpath ("$curr_path$t_reg_pos_err_path");
+mkpath ("$curr_path$t_reg_shadow_err_path");
+mkpath ("$curr_path$t_reg_filter_err_path");
+
+mkpath ("$curr_path$signal_dump_path");
+
+mkpath ("$curr_path$source_analysis_path$target_data_path$cases_data_path$case_positive_data_path");
+mkpath ("$curr_path$source_analysis_path$target_data_path$cases_data_path$case_filtered_data_path");
+
+#===================================================== Read Tick History ===
+
+print "Read Tick History...\n";
+
+open(my $f_handle, "$curr_path$tick_history_file") or warn "Can't open $tick_history_file";
+
+my $tick_no = 0;
+
+my @tick_date;
+my @tick_high;
+my @tick_low;
+while (my $tick_line = <$f_handle>) 
+{
+                chomp ($tick_line);
+                my @tick_fields = split (",", $tick_line);
+                
+#                print "Source Tick Data: ". $tick_fields[0] . "-" . $tick_fields[1] . "-" . $tick_fields[3] . "-" . $tick_fields[4] . "\n";
+                
+                $tick_date[$tick_no] = timelocal(
+                                                0,
+                                                substr($tick_fields[1],3,2),
+                                                substr($tick_fields[1],0,2),
+                                                substr($tick_fields[0],8,2),
+                                                substr($tick_fields[0],5,2) - 1,
+                                                substr($tick_fields[0],0,4) - 1900
+                                                );
+                
+                $tick_high[$tick_no] = $tick_fields[3];
+                $tick_low[$tick_no]  = $tick_fields[4];
+                
+#                print "Tick Line: $tick_no, DateTime: " . localtime($tick_date[$tick_no]) . ", HighLow: " . $tick_high[$tick_no] . "," . $tick_low[$tick_no] . "\n";
+                $tick_no = $tick_no + 1;
+}
+close($f_handle);
+
+print "History Tick Number : $tick_no\n";
+
+#===================================================== Read Signal History ===
+
+print "Read Signal History...\n";
+
+my $src_signal_pos    = "t_shots\\$fx_symbol\\LRES\\";
+my $src_signal_shadow = "t_shots\\$fx_symbol\\Shadow\\LRES\\";
+my $src_signal_filter = "t_shots\\$fx_symbol\\Filter4\\LRES\\";
+
+my $signal_src_pos_flag    = "P";
+my $signal_src_shadow_flag = "S";
+my $signal_src_filter_flag = "F";
+
+my $signal_sell_flag = "S";
+my $signal_buy_flag  = "B";
+
+my $signal_strong_sell_flag_t1  = "S1";
+my $signal_strong_buy_flag_t1   = "B1";
+my $signal_strong_sell_flag_t2  = "S2";
+my $signal_strong_buy_flag_t2   = "B2";
+my $signal_strong_sell_flag_t3  = "S3";
+my $signal_strong_buy_flag_t3   = "B3";
+my $signal_week_flag            = "W";
+my $signal_strong_sell_flag_err = "SE";
+my $signal_strong_buy_flag_err  = "BE";
+open($f_handle, "$curr_path$signal_history_file") or warn "Can't open $signal_history_file";
+
+my $signal_no = 0;
+
+my @signal_date;                # Signal DateTime
+my @signal_name;                # Shot File Name
+my @signal_order;               # Sell or Buy
+my @signal_type;                # Pos or Shadow or Filter
+my @signal_close;               # Close Value
+
+my @signal_strong_type;         # Sell or Buy or Weak
+my @signal_strong_tick_no;      # Number of strong signal tick
+while (my $signal_line = <$f_handle>) 
+{
+                chomp ($signal_line);
+                my @signal_fields = split (",", $signal_line);
+                
+#                print "Signal History Data: ". $signal_fields[0] . "-" . $signal_fields[1] . "\n";
+                
+                if (index($signal_fields[0],$src_signal_pos) == 0)
+                {
+                                $signal_type[$signal_no] = $signal_src_pos_flag;
+                                substr($signal_fields[0],0,length($src_signal_pos),"");
+                                $signal_name[$signal_no] = $signal_fields[0]; 
+                }
+                
+                if (index($signal_fields[0],$src_signal_shadow) == 0)
+                {
+                                $signal_type[$signal_no] = $signal_src_shadow_flag;
+                                substr($signal_fields[0],0,length($src_signal_shadow),"");
+                                $signal_name[$signal_no] = $signal_fields[0]; 
+                }
+                
+                if (index($signal_fields[0],$src_signal_filter) == 0)
+                {
+                                $signal_type[$signal_no] = $signal_src_filter_flag;
+                                substr($signal_fields[0],0,length($src_signal_filter),"");
+                                $signal_name[$signal_no] = $signal_fields[0]; 
+                }
+                
+                $signal_date[$signal_no] = timelocal(get_fname_datetime($signal_name[$signal_no]));
+                                
+                my $signal_case = substr($signal_name[$signal_no],0,1);
+                if (($signal_case == 1) || ($signal_case == 3) || ($signal_case == 5))
+                {
+                                $signal_order[$signal_no] = $signal_sell_flag;
+                }
+                if (($signal_case == 2) || ($signal_case == 4) || ($signal_case == 6))
+                {
+                                $signal_order[$signal_no] = $signal_buy_flag;
+                }
+
+                $signal_close[$signal_no] = $signal_fields[1];
+                
+                $signal_strong_type[$signal_no] = $signal_week_flag;
+                $signal_strong_tick_no[$signal_no] = -1;
+                
+#                print "\nSignal Line: $signal_no, Signal Name: " . $signal_name[$signal_no] . ", DateTime: " . localtime($signal_date[$signal_no]) . "\n";
+#                print "Signal Order: " . $signal_order[$signal_no] . ",Signal Type: " . $signal_type[$signal_no] . ", Signal Close: " . $signal_close[$signal_no] . "\n";
+
+                $signal_no = $signal_no + 1;
+}
+
+close($f_handle);
+
+print "History Signal Number : $signal_no\n";
+
+#===================================================== Mark Strong Signals Type 1 ===
+
+print "Mark Strong Signals Type 1 ...\n";
+my $i_signal = $signal_no - 1;               # signal no to process
+my $i_tick   = $tick_no - 1;                 # current tick no to start
+
+while ($i_signal >= 0) 
+{
+                if (set_start_i_tick_no() < 0)  
+                {
+                                print "Start i_tick no not found for: $i_signal\n";
+                                next;
+                }
+                
+                mark_strong_signal_type1();
+} 
+continue 
+{
+                $i_signal = $i_signal - 1;
+}
+
+#============================================ Mark Strong Filtered Signals Type 3 ===
+
+print "Mark Filtered Strong Signals Type 3 ...\n";
+
+$i_signal = $signal_no - 1;               # signal no to process
+$i_tick   = $tick_no - 1;                 # current tick no to start
+
+while ($i_signal >= 0)
+{
+                if (set_start_i_tick_no() < 0)  
+                {
+                                print "Start i_tick no not found for filtered signal: $i_signal\n";
+                                next;
+                }
+                
+                if ($signal_type[$i_signal] eq $signal_src_filter_flag)
+                {
+                                mark_strong_filtered_signal_type3();
+                }
+} 
+continue 
+{
+                $i_signal = $i_signal - 1;
+}
+
+#===================================================== Write Signal Dump =============
+
+print "Write Signal Dump File ...\n";
+write_signal_dump();
+
+#===================================================== Write Processed Signal Shots ==
+
+print "-- Write Processed Signal Shot Files ...\n";
+
+#-- write_processed_signal_shots();
+
+#===================================================== Collect Positive Error Cases ==
+
+print "Collect Positive Error Cases ...\n";
+
+collect_positive_error_cases();
+
+#===================================================== Collect Filtered Error Cases ==
+
+print "Collect Filtered Error Cases ...\n";
+
+collect_filtered_error_cases();
+#================================================ mark_strong_signal_type1() =========
+
+sub mark_strong_signal_type1
+{
+my $i_analysis_tick = $i_tick;                  # tick no to analyse particular i_signal starting from i_tick
+my $signal_val = $signal_close[$i_signal];      # current signal
+
+my $max_thresold = $signal_val + ($strong_signal_type1_thresold * $tick_point);
+my $min_thresold = $signal_val - ($strong_signal_type1_thresold * $tick_point);
+
+my $max_high = $tick_high[$i_analysis_tick];
+my $min_low  = $tick_low[$i_analysis_tick];
+
+while ($i_analysis_tick < $tick_no)
+{
+                $max_high = max_val($max_high, $tick_high[$i_analysis_tick]);
+                $min_low  = min_val($min_low, $tick_low[$i_analysis_tick]);
+                
+                if ($max_high > $max_thresold)
+                {
+                                check_max_threshold($i_analysis_tick);
+                                return;
+                }
+                
+                if ($min_low < $min_thresold)
+                {
+                                check_min_threshold($i_analysis_tick);
+                                return;
+                }
+                }
+continue
+{
+                $i_analysis_tick = $i_analysis_tick + 1;
+}
+                return;                 # the signal stays weak
+}
+
+#================================================ mark_strong_filtered_signal_type3() =========
+
+sub mark_strong_filtered_signal_type3
+{
+my $i_analysis_tick = $i_tick;                  # tick no to analyse particular i_signal starting from i_tick
+my $signal_val = $signal_close[$i_signal];      # current signal
+
+my $max_thresold = $signal_val + ($strong_signal_type3_thresold * $tick_point);
+my $min_thresold = $signal_val - ($strong_signal_type3_thresold * $tick_point);
+
+my $max_high = $tick_high[$i_analysis_tick];
+my $min_low  = $tick_low[$i_analysis_tick];
+
+while ($i_analysis_tick < $tick_no)
+{
+                $max_high = max_val($max_high, $tick_high[$i_analysis_tick]);
+                $min_low  = min_val($min_low, $tick_low[$i_analysis_tick]);
+                
+                if ($max_high > $max_thresold)
+                {
+                                check_max_threshold_3($i_analysis_tick);
+                                return;
+                }
+                
+                if ($min_low < $min_thresold)
+                {
+                                check_min_threshold_3($i_analysis_tick);
+                                return;
+                }
+                
+}
+continue
+{
+                $i_analysis_tick = $i_analysis_tick + 1;
+}
+
+                return;                 # the signal stays weak
+}
+#================================================ check_max_threshold($i_analysis_tick) =======
+
+sub check_max_threshold()
+{
+my ($i_tck) = @_;        # Parameters   
+
+my $min_buy_val = get_min_buy_val($i_tck);
+           
+                if ($signal_order[$i_signal] eq $signal_sell_flag) 
+                {
+                                if (($signal_type[$i_signal] eq $signal_src_pos_flag) ||
+                                    ($signal_type[$i_signal] eq $signal_src_shadow_flag))
+                                {
+                                                
+                                                if ($min_buy_val > 0)
+                                                {                                                                if ($signal_close[$i_signal] > ($min_buy_val + ($strong_signal_type2_thresold * $tick_point))) 
+                                                                {
+                                                                                $signal_strong_type[$i_signal] = $signal_strong_sell_flag_t2;
+                                                                                return;
+                                                                }
+                                                }
+                                                else 
+                                                {
+                                                                $signal_strong_type[$i_signal] = $signal_strong_sell_flag_err;
+                                                                $signal_strong_tick_no[$i_signal] = $i_tck;
+                                                                return;
+                                                }
+                                }
+                                
+                                if ($signal_type[$i_signal] eq $signal_src_filter_flag)
+                                {
+                                                if ($min_buy_val > 0)
+                                                {
+                                                                return;
+                                                }
+                                                else 
+                                                {
+                                                                return;
+                                                }
+                                }
+                }
+                
+                if ($signal_order[$i_signal] eq $signal_buy_flag) 
+                {
+                                if (($signal_type[$i_signal] eq $signal_src_pos_flag) ||
+                                    ($signal_type[$i_signal] eq $signal_src_shadow_flag))
+                                {
+                                                if ($min_buy_val > 0)
+                                                {
+                                                                $signal_strong_type[$i_signal] = $signal_strong_buy_flag_t1;
+                                                                $signal_strong_tick_no[$i_signal] = $i_tck;
+                                                                return;
+                                                }
+                                                else 
+                                                {
+                                                                $signal_strong_type[$i_signal] = $signal_strong_buy_flag_t1;
+                                                                $signal_strong_tick_no[$i_signal] = $i_tck;
+                                                                return;
+                                                }
+                                }
+                                
+                                if ($signal_type[$i_signal] eq $signal_src_filter_flag)
+                                {
+                                                if ($min_buy_val > 0)
+                                                {
+                                                                if ($signal_close[$i_signal] < ($min_buy_val + ($strong_signal_type2_thresold * $tick_point))) 
+                                                                {
+                                                                                $signal_strong_type[$i_signal] = $signal_strong_buy_flag_t2;
+                                                                                return;
+                                                                }
+                                                }
+                                                else 
+                                                {
+                                                                $signal_strong_type[$i_signal] = $signal_strong_buy_flag_t1;
+                                                                $signal_strong_tick_no[$i_signal] = $i_tck;
+                                                                return;
+                                                }
+                                }
+                }
+
+                return;
+}
+
+#================================================ check_max_threshold_3($i_analysis_tick) =======
+
+sub check_max_threshold_3()
+{
+my ($i_tck) = @_;        # Parameters   
+
+my $min_buy_val = get_min_buy_val($i_tck);
+           
+                if ($signal_order[$i_signal] eq $signal_sell_flag) 
+                {
+                                if ($signal_type[$i_signal] eq $signal_src_filter_flag)
+                                {
+                                                if ($min_buy_val > 0)
+                                                {
+                                                                return;
+                                                }
+                                                else 
+                                                {
+                                                                return;
+                                                }
+                                }
+                }
+                
+                if ($signal_order[$i_signal] eq $signal_buy_flag) 
+                {
+                                if ($signal_type[$i_signal] eq $signal_src_filter_flag)
+                                {
+                                                if ($min_buy_val > 0)
+                                                {
+                                                                return;
+                                                }
+                                                else 
+                                                {
+                                                                $signal_strong_type[$i_signal] = $signal_strong_buy_flag_t3;
+                                                                $signal_strong_tick_no[$i_signal] = $i_tck;
+                                                                return;
+                                                }
+                                }
+                }
+
+                return;
+}
+
+#================================================ check_min_threshold($i_analysis_tick) =======
+
+sub check_min_threshold()
+{
+my ($i_tck) = @_;        # Parameters   
+
+my $max_sell_val = get_max_sell_val($i_tck);
+           
+                if ($signal_order[$i_signal] eq $signal_sell_flag) 
+                {
+                                if (($signal_type[$i_signal] eq $signal_src_pos_flag) ||
+                                    ($signal_type[$i_signal] eq $signal_src_shadow_flag))
+                                {
+                                                
+                                                if ($max_sell_val > 0)
+                                                {
+                                                                $signal_strong_type[$i_signal] = $signal_strong_sell_flag_t1;
+                                                                $signal_strong_tick_no[$i_signal] = $i_tck;
+                                                                return;
+                                                }
+                                                else 
+                                                {
+                                                                $signal_strong_type[$i_signal] = $signal_strong_sell_flag_t1;
+                                                                $signal_strong_tick_no[$i_signal] = $i_tck;
+                                                                return;
+                                                }
+                                }
+                                
+                                if ($signal_type[$i_signal] eq $signal_src_filter_flag)
+                                {
+                                                if ($max_sell_val > 0)
+                                                {
+                                                                if ($signal_close[$i_signal] > ($max_sell_val - ($strong_signal_type2_thresold * $tick_point))) 
+                                                                {
+                                                                                $signal_strong_type[$i_signal] = $signal_strong_sell_flag_t2;
+                                                                                return;
+                                                                }
+                                                }
+                                                else 
+                                                {
+                                                                $signal_strong_type[$i_signal] = $signal_strong_sell_flag_t1;
+                                                                $signal_strong_tick_no[$i_signal] = $i_tck;
+                                                                return;
+                                                }
+                                }
+                }
+                
+                if ($signal_order[$i_signal] eq $signal_buy_flag) 
+                {
+                                if (($signal_type[$i_signal] eq $signal_src_pos_flag) ||
+                                    ($signal_type[$i_signal] eq $signal_src_shadow_flag))
+                                {
+                                                if ($max_sell_val > 0)
+                                                {
+                                                                if ($signal_close[$i_signal] < ($max_sell_val + ($strong_signal_type2_thresold * $tick_point))) 
+                                                                {
+                                                                                $signal_strong_type[$i_signal] = $signal_strong_buy_flag_t2;
+                                                                                return;
+                                                                }
+                                                }
+                                                else 
+                                                {
+                                                                $signal_strong_type[$i_signal] = $signal_strong_buy_flag_err;
+                                                                $signal_strong_tick_no[$i_signal] = $i_tck;
+                                                                return;
+                                                }
+                                }
+                                
+                                if ($signal_type[$i_signal] eq $signal_src_filter_flag)
+                                {
+                                                if ($max_sell_val > 0)
+                                                {
+                                                                return;
+                                                }
+                                                else 
+                                                {
+                                                                return;
+                                                }
+                                }
+                }
+
+                return;
+}
+
+#================================================ check_min_threshold_3($i_analysis_tick) =======
+
+sub check_min_threshold_3()
+{
+my ($i_tck) = @_;        # Parameters   
+
+my $max_sell_val = get_max_sell_val($i_tck);
+           
+                if ($signal_order[$i_signal] eq $signal_sell_flag) 
+                {
+                                if ($signal_type[$i_signal] eq $signal_src_filter_flag)
+                                {
+                                                if ($max_sell_val > 0)
+                                                {
+                                                                return;
+                                                }
+                                                else 
+                                                {
+                                                                $signal_strong_type[$i_signal] = $signal_strong_sell_flag_t3;
+                                                                $signal_strong_tick_no[$i_signal] = $i_tck;
+                                                                return;
+                                                }
+                                }
+                }
+                
+                if ($signal_order[$i_signal] eq $signal_buy_flag) 
+                {
+                                if ($signal_type[$i_signal] eq $signal_src_filter_flag)
+                                {
+                                                if ($max_sell_val > 0)
+                                                {
+                                                                return;
+                                                }
+                                                else 
+                                                {
+                                                                return;
+                                                }
+                                }
+                }
+
+                return;
+}
+
+#================================================ get_max_sell_val($i_tck) =======
+
+sub get_max_sell_val
+{
+my ($i_tck) = @_;        # Parameters 
+                
+my $i_val = $min_close_value;
+my $i_sgn = $i_signal + 1;                             # next signal
+           
+                while (($i_sgn < $signal_no) && 
+                       ($signal_date[$i_sgn] < ($tick_date[$i_tck] + ($tick_history_time_int * 60))))
+                {
+                                if (($signal_strong_type[$i_sgn] eq $signal_strong_sell_flag_t1) ||
+                                    ($signal_strong_type[$i_sgn] eq $signal_strong_sell_flag_t2) ||
+                                    (($signal_strong_type[$i_sgn] eq $signal_week_flag) && ($signal_order[$i_sgn] eq $signal_sell_flag)))
+                                {
+                                                if ($signal_close[$i_sgn] > $i_val) {$i_val = $signal_close[$i_sgn];}
+                                }
+                }
+                continue
+                {
+                                $i_sgn = $i_sgn + 1;
+                }
+                
+                if ($i_val == $min_close_value) {return(-1);}
+
+                return($i_val);
+}
+
+#================================================ get_min_buy_val($i_tck) =======
+
+sub get_min_buy_val
+{
+my ($i_tck) = @_;        # Parameters 
+                
+my $i_val = $max_close_value;
+my $i_sgn = $i_signal + 1;                             # next signal
+           
+                while (($i_sgn < $signal_no) && 
+                       ($signal_date[$i_sgn] < ($tick_date[$i_tck] + ($tick_history_time_int * 60))))
+                {
+                                if (($signal_strong_type[$i_sgn] eq $signal_strong_buy_flag_t1) ||
+                                    ($signal_strong_type[$i_sgn] eq $signal_strong_buy_flag_t2) ||
+                                    (($signal_strong_type[$i_sgn] eq $signal_week_flag) && ($signal_order[$i_sgn] eq $signal_buy_flag)))
+                                {
+                                                if ($signal_close[$i_sgn] < $i_val) {$i_val = $signal_close[$i_sgn];}
+                                }
+                }
+                continue
+                {
+                                $i_sgn = $i_sgn + 1;
+                }
+                
+                if ($i_val == $max_close_value) {return(-1);}
+
+                return($i_val);
+}
+
+#================================================ set_start_i_tick_no() =======
+
+sub set_start_i_tick_no
+{
+my $i_cnt = $i_tick;
+           
+                while ($tick_date[$i_cnt] > $signal_date[$i_signal])
+                {
+                                $i_cnt = $i_cnt - 1;
+                                
+                                if ($i_cnt < 0) 
+                                {
+                                                return(-1);             # tick not found
+                                }
+                }
+                
+                $i_tick = $i_cnt;
+                return($i_tick);
+}
+#================================================ get_fname_datetime($fname) ==
+
+sub get_fname_datetime
+{
+                my $fname = shift @_;        # Parameters
+                
+                my $sec = 0;
+                my $min = 0;
+                my $hour = 0;
+                my $mday = 0;
+                my $mon = 0;
+                my $year = 0;
+                
+                my $pos = index($fname,"]-");
+                $pos = $pos + 2;
+                
+                $year = substr($fname,$pos,4) - 1900;
+                
+                my $mname = substr($fname,$pos+5,3);
+                foreach my $mname_item (@month_name)
+                {
+                                if ($mname ne $mname_item)
+                                {
+                                                $mon = $mon + 1;
+                                }
+                                else
+                                {
+                                                last;
+                                }
+                }
+                
+                $mday = substr($fname,$pos+5+4,2);
+                $hour = substr($fname,$pos+5+4+3,2);
+                $min = substr($fname,$pos+5+4+3+2,2);
+                $sec = substr($fname,$pos+5+4+3+2+2,2);
+                
+#                print "DateTime parsing: $sec,$min,$hour,$mday,$mon,$year\n";
+                
+                return ($sec,$min,$hour,$mday,$mon,$year);
+}
+
+#================================================ max_val (v1, v2) ===============
+sub max_val
+{
+my ($var1, $var2) = @_;        # Parameters   
+
+                if ($var1 > $var2) 
+                {
+                                return($var1);
+                }
+                return($var2);         }
+
+#================================================ min_val (v1, v2) ===============
+
+sub min_val
+{
+my ($var1, $var2) = @_;        # Parameters   
+
+                if ($var1 < $var2) 
+                {
+                                return($var1);
+                }
+
+                return($var2);         
+}
+
+#================================================ write_signal_dump() ===============
+
+sub write_signal_dump
+{
+my $f_dump;my $i_sgn = 0;                             # first signal             
+
+my $tck_d;
+my $tck_t;
+my $tck_h;
+my $tck_l;
+
+                open($f_dump, ">", "$curr_path$signal_dump_file") or warn "Can't open $signal_dump_file";
+                
+                print $f_dump "Date,Time,Name,Order_Type,Signal_Type,Signal_Val,Strong_Type,Strong_Tick,Tick_Date,Tick_Time,Tick_High,Tick_Low\n";
+
+                while ($i_sgn < $signal_no)
+                {
+                                
+                                if ($signal_strong_tick_no[$i_sgn] == -1) 
+                                {
+                                                $tck_d = "";
+                                                $tck_t = "";
+                                                $tck_h = "";
+                                                $tck_l = "";
+                                }
+                                else 
+                                {
+                                                $tck_d = date_str($tick_date[$signal_strong_tick_no[$i_sgn]]);
+                                                $tck_t = time_str($tick_date[$signal_strong_tick_no[$i_sgn]]);
+                                                $tck_h = $tick_high[$signal_strong_tick_no[$i_sgn]];
+                                                $tck_l = $tick_low[$signal_strong_tick_no[$i_sgn]];                                }
+                                
+                                print $f_dump 
+                                                date_str($signal_date[$i_sgn]) . "," . 
+                                                time_str($signal_date[$i_sgn]) . "," . 
+                                                $signal_name[$i_sgn] . "," . 
+                                                $signal_order[$i_sgn] . "," . 
+                                                $signal_type[$i_sgn] . "," . 
+                                                $signal_close[$i_sgn] . "," . 
+                                                $signal_strong_type[$i_sgn] . "," . 
+                                                $signal_strong_tick_no[$i_sgn] . "," . 
+                                                "$tck_d,$tck_t,$tck_h,$tck_l\n";
+                }
+                continue
+                {
+                                $i_sgn = $i_sgn + 1;
+                }
+                                close($f_dump);
+                
+                return;         
+}
+
+#================================================ date_str(signal_date[i_sgn]) ===============
+
+sub date_str
+{
+my ($dt) = @_;        # Parameters   
+
+                my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime($dt);
+
+                $year = $year + 1900;
+                $mon = $mon + 1;
+                
+                my $d_str = sprintf("%04d", $year) . "." . sprintf("%02d", $mon) . "." . sprintf("%02d", $mday);
+
+                return($d_str);         
+}
+
+#================================================ time_str(signal_date[i_sgn]) ===============
+
+sub time_str
+{
+my ($dt) = @_;        # Parameters   
+
+                my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime($dt);
+                
+                my $t_str = sprintf("%02d", $hour) . ":" . sprintf("%02d", $min) . ":" . sprintf("%02d", $sec);
+
+                return($t_str);         
+}
+
+#================================================ write_processed_signal_shots() =============
+
+sub write_processed_signal_shots
+{
+my $i_sgn = 0;                             # first signal 
+my $src_fname;
+my $trg_fname;
+                while ($i_sgn < $signal_no)
+                {
+#--- Set source file name ---
+
+                                $src_fname = get_signal_src_fname($i_sgn);
+                                
+#--- Set target file name ---
+
+                                if (($signal_type[$i_sgn] eq $signal_src_pos_flag) || ($signal_type[$i_sgn] eq $signal_src_shadow_flag))
+                                {
+                                                if (($signal_strong_type[$i_sgn] eq $signal_strong_sell_flag_err) || ($signal_strong_type[$i_sgn] eq $signal_strong_buy_flag_err))
+                                                {
+                                                                $trg_fname = "$curr_path$t_reg_pos_err_path/" . $signal_name[$i_sgn] . "_" . $signal_strong_type[$i_sgn] . ".gif";
+                                                }
+                                                else
+                                                {
+                                                                $trg_fname = "$curr_path$t_reg_pos_path/" . $signal_name[$i_sgn] . "_" . $signal_strong_type[$i_sgn] . ".gif";
+                                                }
+                                }
+                                
+                                if ($signal_type[$i_sgn] eq $signal_src_filter_flag)
+                                {
+                                                if (($signal_strong_type[$i_sgn] eq $signal_strong_sell_flag_t3) || 
+                                                    ($signal_strong_type[$i_sgn] eq $signal_strong_buy_flag_t3)
+#                                                      ||
+#                                                    ($signal_strong_type[$i_sgn] eq $signal_strong_sell_flag_t2) || 
+#                                                    ($signal_strong_type[$i_sgn] eq $signal_strong_buy_flag_t2)
+                                                    )
+                                                {
+                                                                $trg_fname = "$curr_path$t_reg_filter_err_path/" . $signal_name[$i_sgn] . "_" . $signal_strong_type[$i_sgn] . ".gif";
+                                                }
+                                                else
+                                                {
+                                                                $trg_fname = "$curr_path$t_reg_filter_path/" . $signal_name[$i_sgn] . "_" . $signal_strong_type[$i_sgn] . ".gif";
+                                                }
+                                }
+                                
+#                                print "Copy Shot: $i_sgn\n - From: $src_fname\n - To: $trg_fname\n";
+                                
+                                copy($src_fname,$trg_fname) or warn "Can't copy $src_fname to $trg_fname\n";
+                                
+                }
+                continue
+                {
+                                $i_sgn = $i_sgn + 1;
+                }
+                return;         
+}
+#================================================ collect_positive_error_cases() =========
+
+sub collect_positive_error_cases
+{
+my $i_sgn = 0;                             # first signal 
+my $i_case_sgn = 0;
+my $case_name;
+
+                while ($i_sgn < $signal_no)
+                {
+                                if (($signal_type[$i_sgn] eq $signal_src_pos_flag) || ($signal_type[$i_sgn] eq $signal_src_shadow_flag))
+                                {
+                                                if (($signal_strong_type[$i_sgn] eq $signal_strong_sell_flag_err) || ($signal_strong_type[$i_sgn] eq $signal_strong_buy_flag_err))
+                                                {
+                                                                $case_name = substr($signal_name[$i_sgn],0,index($signal_name[$i_sgn],"]-") + 1);
+                                                                $i_case_sgn = find_first_pos_err_signal($case_name);
+                                                                if ($i_case_sgn == $i_sgn)
+                                                                {
+                                                                                create_positive_error_case($case_name);
+                                                                }
+                                                }
+                                }
+                }
+                continue
+                {
+                                $i_sgn = $i_sgn + 1;
+                }
+
+                return;
+}
+
+#================================================ collect_filtered_error_cases() =========
+
+sub collect_filtered_error_cases
+{
+my $i_sgn = 0;                             # first signal 
+my $i_case_sgn = 0;
+my $case_name;
+
+
+
+
+                while ($i_sgn < $signal_no)
+                {
+                                if ($signal_type[$i_sgn] eq $signal_src_filter_flag)
+                                {
+                                                if (($signal_strong_type[$i_sgn] eq $signal_strong_sell_flag_t3) || 
+                                                    ($signal_strong_type[$i_sgn] eq $signal_strong_buy_flag_t3)
+#                                                      ||
+#                                                    ($signal_strong_type[$i_sgn] eq $signal_strong_sell_flag_t2) || 
+#                                                    ($signal_strong_type[$i_sgn] eq $signal_strong_buy_flag_t2)
+                                                    )
+                                                {
+                                                                $case_name = substr($signal_name[$i_sgn],0,index($signal_name[$i_sgn],"]-") + 1);
+                                                                $i_case_sgn = find_first_flt_err_signal($case_name);
+                                                                if ($i_case_sgn == $i_sgn)
+                                                                {
+                                                                                create_filtered_error_case($case_name);
+                                                                }
+                                                }
+                                }
+                }
+                continue
+                {
+                                $i_sgn = $i_sgn + 1;
+                }
+
+                return;
+}
+
+#================================================ find_first_pos_err_signal($case_name) =========
+
+sub find_first_pos_err_signal
+{
+my ($case_name) = @_;        # Parameters 
+
+my $i_sgn = 0;                             # first signal 
+
+                while ($i_sgn < $signal_no)
+                {
+                                if (($signal_type[$i_sgn] eq $signal_src_pos_flag) || ($signal_type[$i_sgn] eq $signal_src_shadow_flag))
+                                {
+                                                if (($signal_strong_type[$i_sgn] eq $signal_strong_sell_flag_err) || ($signal_strong_type[$i_sgn] eq $signal_strong_buy_flag_err))
+                                                {
+                                                                if (index($signal_name[$i_sgn],$case_name) >= 0)
+                                                                {
+                                                                                return($i_sgn);
+                                                                }
+                                                }
+                                }
+                }
+                continue
+                {
+                                $i_sgn = $i_sgn + 1;
+                }
+
+                return(-1);
+}
+
+#================================================ find_first_flt_err_signal($case_name) =========
+
+sub find_first_flt_err_signal
+{
+my ($case_name) = @_;        # Parameters 
+
+my $i_sgn = 0;                             # first signal 
+
+                while ($i_sgn < $signal_no)
+                {
+                                if ($signal_type[$i_sgn] eq $signal_src_filter_flag)
+                                {
+                                                if (($signal_strong_type[$i_sgn] eq $signal_strong_sell_flag_t3) || 
+                                                    ($signal_strong_type[$i_sgn] eq $signal_strong_buy_flag_t3)
+#                                                      ||
+#                                                    ($signal_strong_type[$i_sgn] eq $signal_strong_sell_flag_t2) || 
+#                                                    ($signal_strong_type[$i_sgn] eq $signal_strong_buy_flag_t2)
+                                                    )
+                                                {
+                                                                if (index($signal_name[$i_sgn],$case_name) >= 0)
+                                                                {
+                                                                                return($i_sgn);
+                                                                }
+                                                }
+                                }
+                }
+                continue
+                {
+                                $i_sgn = $i_sgn + 1;
+                }
+
+                return(-1);
+}
+
+#================================================ create_positive_error_case($case_name) =========
+
+sub create_positive_error_case
+{
+my ($case_name) = @_;        # Parameters 
+
+my $case_path = "$curr_path$source_analysis_path$target_data_path$cases_data_path$case_positive_data_path";
+my $src_fname;
+my $trg_fname;
+my $trg_path;
+
+my $case_on_name;
+
+my $case_pos_type = get_pos_signal_case_type($case_name);               # 1 - type 1 [ - ], 2 - type 2 [ - - ]
+#--- Collect positive cases ---
+
+my $i_sgn = 0;                             # first signal 
+
+$trg_path = "$case_path$case_name_prefix$case_name$case_pos_ok_data_path";
+mkpath ($trg_path);
+
+                while ($i_sgn < $signal_no)
+                {
+                                if (($signal_type[$i_sgn] eq $signal_src_pos_flag) || ($signal_type[$i_sgn] eq $signal_src_shadow_flag))
+                                {
+                                                if (($signal_strong_type[$i_sgn] ne $signal_strong_sell_flag_err) && ($signal_strong_type[$i_sgn] ne $signal_strong_buy_flag_err))
+                                                {
+                                                                if (index($signal_name[$i_sgn],$case_name) >= 0)
+                                                                {
+                                                                                $src_fname = get_signal_src_fname($i_sgn);
+                                                                                $trg_fname = "$trg_path/" . $signal_name[$i_sgn] . "_" . $signal_strong_type[$i_sgn] . ".gif";
+                                                                                
+                                                                                copy($src_fname,$trg_fname) or warn "Can't copy positive case $src_fname to $trg_fname\n";
+                                                                }
+                                                }
+                                }
+                }
+                continue
+                {
+                                $i_sgn = $i_sgn + 1;
+                }
+
+#--- Collect positive cases [0-N] ---
+
+$i_sgn = 0;                             # first signal 
+             if (($case_pos_type == 1) && (index($case_name,"[0-N]") < 0))
+             {
+                $case_on_name = substr($case_name,0,index($case_name,"["));
+                $case_on_name = $case_on_name . "[0-N]";
+                    
+                while ($i_sgn < $signal_no)
+                {
+                                if (($signal_type[$i_sgn] eq $signal_src_pos_flag) || ($signal_type[$i_sgn] eq $signal_src_shadow_flag))
+                                {
+                                                if (($signal_strong_type[$i_sgn] ne $signal_strong_sell_flag_err) && ($signal_strong_type[$i_sgn] ne $signal_strong_buy_flag_err))
+                                                {
+                                                                if (index($signal_name[$i_sgn],$case_on_name) >= 0)
+                                                                {
+                                                                                $src_fname = get_signal_src_fname($i_sgn);
+                                                                                $trg_fname = "$trg_path/" . $signal_name[$i_sgn] . "_" . $signal_strong_type[$i_sgn] . ".gif";
+                                                                                
+                                                                                copy($src_fname,$trg_fname) or warn "Can't copy positive [0-N] case $src_fname to $trg_fname\n";
+                                                                }
+                                                }
+                                }
+                }
+                continue
+                {
+                                $i_sgn = $i_sgn + 1;
+                }
+             }
+
+#--- Collect error cases ---
+
+$i_sgn = 0;                             # first signal 
+
+$trg_path = "$case_path$case_name_prefix$case_name$case_pos_err_data_path";
+mkpath ($trg_path);
+
+                while ($i_sgn < $signal_no)
+                {
+                                if (($signal_type[$i_sgn] eq $signal_src_pos_flag) || ($signal_type[$i_sgn] eq $signal_src_shadow_flag))
+                                {
+                                                if (($signal_strong_type[$i_sgn] eq $signal_strong_sell_flag_err) || ($signal_strong_type[$i_sgn] eq $signal_strong_buy_flag_err))
+                                                {
+                                                                if (index($signal_name[$i_sgn],$case_name) >= 0)
+                                                                {
+                                                                                $src_fname = get_signal_src_fname($i_sgn);
+                                                                                $trg_fname = "$trg_path/" . $signal_name[$i_sgn] . "_" . $signal_strong_type[$i_sgn] . ".gif";
+                                                                                
+                                                                                copy($src_fname,$trg_fname) or warn "Can't copy positive error case $src_fname to $trg_fname\n";
+                                                                }
+                                                }
+                                }
+                }
+                continue
+                {
+                                $i_sgn = $i_sgn + 1;
+                }
+
+#--- Collect error cases [0-N] ---
+
+$i_sgn = 0;                             # first signal 
+
+             if (($case_pos_type == 1) && (index($case_name,"[0-N]") < 0))
+             {
+                $case_on_name = substr($case_name,0,index($case_name,"["));
+                $case_on_name = $case_on_name . "[0-N]";
+                    
+                while ($i_sgn < $signal_no)
+                {
+                                if (($signal_type[$i_sgn] eq $signal_src_pos_flag) || ($signal_type[$i_sgn] eq $signal_src_shadow_flag))
+                                {
+                                                if (($signal_strong_type[$i_sgn] eq $signal_strong_sell_flag_err) || ($signal_strong_type[$i_sgn] eq $signal_strong_buy_flag_err))
+                                                {
+                                                                if (index($signal_name[$i_sgn],$case_on_name) >= 0)
+                                                                {
+                                                                                $src_fname = get_signal_src_fname($i_sgn);
+                                                                                $trg_fname = "$trg_path/" . $signal_name[$i_sgn] . "_" . $signal_strong_type[$i_sgn] . ".gif";
+                                                                                
+                                                                                copy($src_fname,$trg_fname) or warn "Can't copy positive [0-N] error case $src_fname to $trg_fname\n";
+                                                                }
+                                                }
+                                }
+                }
+                continue
+                {
+                                $i_sgn = $i_sgn + 1;
+                }
+             }
+
+                return;
+}
+
+#================================================ create_filtered_error_case($case_name) =========
+
+sub create_filtered_error_case
+{
+my ($case_name) = @_;        # Parameters 
+
+my $case_path = "$curr_path$source_analysis_path$target_data_path$cases_data_path$case_filtered_data_path";
+my $src_fname;
+my $trg_fname;
+my $trg_path;
+
+#--- Collect filtered cases ---
+
+my $i_sgn = 0;                             # first signal 
+
+$trg_path = "$case_path$case_name_prefix$case_name$case_flt_ok_data_path";
+mkpath ($trg_path);
+
+                while ($i_sgn < $signal_no)
+                {
+                                if ($signal_type[$i_sgn] eq $signal_src_filter_flag)
+                                {
+                                                if (($signal_order[$i_sgn] eq $signal_sell_flag) &&
+                                                    ($signal_strong_type[$i_sgn] ne $signal_strong_sell_flag_t3)
+#                                                    ($signal_strong_type[$i_sgn] ne $signal_strong_sell_flag_t2)
+                                                    )
+                                                {
+                                                                if (index($signal_name[$i_sgn],$case_name) >= 0)
+                                                                {
+                                                                                $src_fname = get_signal_src_fname($i_sgn);
+                                                                                $trg_fname = "$trg_path/" . $signal_name[$i_sgn] . "_" . $signal_strong_type[$i_sgn] . ".gif";
+                                                                                
+                                                                                copy($src_fname,$trg_fname) or warn "Can't copy filtered case $src_fname to $trg_fname\n";
+                                                                }
+                                                }
+                                                
+                                                                                                if (($signal_order[$i_sgn] eq $signal_buy_flag) &&
+                                                    ($signal_strong_type[$i_sgn] ne $signal_strong_buy_flag_t3)
+#                                                    ($signal_strong_type[$i_sgn] ne $signal_strong_buy_flag_t2)
+                                                    )
+                                                {
+                                                                if (index($signal_name[$i_sgn],$case_name) >= 0)
+                                                                {
+                                                                                $src_fname = get_signal_src_fname($i_sgn);
+                                                                                $trg_fname = "$trg_path/" . $signal_name[$i_sgn] . "_" . $signal_strong_type[$i_sgn] . ".gif";
+                                                                                
+                                                                                copy($src_fname,$trg_fname) or warn "Can't copy filtered case $src_fname to $trg_fname\n";
+                                                                }
+                                                }
+                                }
+                }
+                continue
+                {
+                                $i_sgn = $i_sgn + 1;
+                }
+
+#--- Collect filtered error cases ---
+
+$i_sgn = 0;                             # first signal 
+
+$trg_path = "$case_path$case_name_prefix$case_name$case_flt_err_data_path";
+mkpath ($trg_path);
+
+                while ($i_sgn < $signal_no)
+                {
+                                if ($signal_type[$i_sgn] eq $signal_src_filter_flag)
+                                {
+                                                if  (
+                                                       ($signal_order[$i_sgn] eq $signal_sell_flag) &&
+                                                       (($signal_strong_type[$i_sgn] eq $signal_strong_sell_flag_t3)
+#                                                        || ($signal_strong_type[$i_sgn] eq $signal_strong_sell_flag_t2)
+                                                        )
+                                                    )
+                                                {
+                                                                if (index($signal_name[$i_sgn],$case_name) >= 0)
+                                                                {
+                                                                                $src_fname = get_signal_src_fname($i_sgn);
+                                                                                $trg_fname = "$trg_path/" . $signal_name[$i_sgn] . "_" . $signal_strong_type[$i_sgn] . ".gif";
+                                                                                
+                                                                                copy($src_fname,$trg_fname) or warn "Can't copy filtered error case $src_fname to $trg_fname\n";
+                                                                }
+                                                }
+                                                
+                                                if  (
+                                                       ($signal_order[$i_sgn] eq $signal_buy_flag) &&
+                                                       (($signal_strong_type[$i_sgn] eq $signal_strong_buy_flag_t3)
+#                                                        || ($signal_strong_type[$i_sgn] eq $signal_strong_buy_flag_t2)
+)
+                                                    )
+                                                {
+                                                                if (index($signal_name[$i_sgn],$case_name) >= 0)
+                                                                {
+                                                                                $src_fname = get_signal_src_fname($i_sgn);
+                                                                                $trg_fname = "$trg_path/" . $signal_name[$i_sgn] . "_" . $signal_strong_type[$i_sgn] . ".gif";
+                                                                                
+                                                                                copy($src_fname,$trg_fname) or warn "Can't copy filtered error case $src_fname to $trg_fname\n";
+                                                                }
+                                                }
+                                }
+                }
+                continue
+                {
+                                $i_sgn = $i_sgn + 1;
+                }
+
+                return;
+}
+
+#================================================ get_signal_src_fname($i_sgn) ================
+
+sub get_signal_src_fname
+{
+my ($i_sgn) = @_;        # Parameters 
+
+my $src_fname;
+
+                if ($signal_type[$i_sgn] eq $signal_src_pos_flag)
+                {
+                                $src_fname = "$curr_path$s_reg_pos_path/" . $signal_name[$i_sgn] . "LRES.gif";
+                }
+                                
+                if ($signal_type[$i_sgn] eq $signal_src_shadow_flag)
+                {
+                                $src_fname = "$curr_path$s_reg_shadow_path/" . $signal_name[$i_sgn] . "LRES.gif";
+                }
+                                
+                if ($signal_type[$i_sgn] eq $signal_src_filter_flag)
+                {
+                                $src_fname = "$curr_path$s_reg_filter_path/" . $signal_name[$i_sgn] . "LRES.gif";
+                }
+                return($src_fname);
+}
+
+#================================================ get_pos_signal_case_type($case_name) ================
+
+sub get_pos_signal_case_type
+{
+my ($case_n) = @_;        # Parameters 
+my $case_type = 1;      
+
+my $case_n_postfix = substr($case_n,index($case_n,"["),(length($case_n) - index($case_n,"[")));
+
+my $idx_val_first  = index($case_n_postfix,"-");
+my $idx_val_second = index($case_n_postfix,"-",$idx_val_first);
+
+                if($idx_val_second >= 0)
+                {
+                                $case_type = 2;
+                }
+
+
+                return($case_type);
+}
+
+

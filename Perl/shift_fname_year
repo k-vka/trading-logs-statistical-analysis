@@ -1,0 +1,73 @@
+#!/usr/bin/perl
+
+use 5.010;
+use strict;
+use warnings;
+use Cwd;
+use Term::UI;
+use Term::ReadLine;
+use File::Path;
+use File::Copy;
+use Date::Format;
+
+#=======================================================================================# Shift Files Date
+#=======================================================================================
+my $shift_path = "/SHIFT_DATE";
+
+my $shift_years = -4;my $shift_seconds = $shift_years * (60 * 60 * 24 * 365);
+
+my $shift_atime = 0;
+my $shift_mtime = 0;
+
+my $curr_path = getcwd;						# Current Directory
+my $term = Term::ReadLine->new('brand');
+my $file_mask = "";
+
+my $answer_reply = 'n';
+print "---\n";
+print "SHIFT File Dates Processing Module\n";
+print "Current Directory: $curr_path\n";
+print "Shift Dates File Catalog: $shift_path\n";
+print "---\n\n";
+
+#--- Ask about Start of the Processing ---
+$answer_reply = $term->get_reply(
+                prompt  => 'Start Shift Dates Processing?',
+                choices => ['y','n'],
+                default => 'n');
+
+if ($answer_reply eq 'n')
+{
+   print "Process Stopped.\n";
+   exit 0;
+}
+
+#--- Start the Processing ---
+
+print "Process Started.\n";
+
+#===================================================== Process Shift Catalog (../SHIFT_DATE) ===
+
+print "Process Shift Dates Catalog (../SHIFT_DATE).\n";
+#===================================================== "*.*" ===
+my $source_catalog = "$curr_path$shift_path";
+print "Shift Dates Catalog: $source_catalog\n";
+
+opendir(my $source_dir, $source_catalog) or die $!;
+my @source_files = grep { /.gif$/ } readdir($source_dir);
+closedir($source_dir);
+print "Total files to process (*.gif): " . @source_files . "\n";
+
+#---------------------------------------------------- (../SHIFT_DATE) Shift File Dates ---
+
+foreach my $file_item (@source_files)
+{
+                $shift_atime = (stat "$source_catalog/$file_item")[8];
+                $shift_mtime = (stat "$source_catalog/$file_item")[9];
+                
+                print "Modify File Date: $source_catalog/$file_item - " . time2str("%c", $shift_mtime) . "\n";
+                
+                utime(($shift_atime + $shift_seconds), ($shift_mtime + $shift_seconds), "$source_catalog/$file_item") || warn "couldn't touch $source_catalog/$file_item: $!";
+}
+
+
